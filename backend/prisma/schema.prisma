@@ -7,11 +7,34 @@ generator client {
   provider = "prisma-client-js"
 }
 
+model Tenant {
+  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name         String
+  createdAt    DateTime?     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime?     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  users        User[]
+  agentConfigs AgentConfig[]
+  sessions     Session[]
+
+  @@map("tenants")
+}
+
+model Provider {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String    // 'deepgram' | 'openai'
+  type      String    // 'stt' | 'tts' | 'llm'
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("providers")
+}
+
 model User {
   id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   email          String          @unique
   passwordHash   String          @map("password_hash")
   createdAt      DateTime?       @default(now()) @map("created_at") @db.Timestamptz
+  tenantId       String          @map("tenant_id") @db.Uuid
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   apiCredentials ApiCredential[]
   agentConfigs   AgentConfig[]
 
@@ -31,35 +54,51 @@ model ApiCredential {
 }
 
 model AgentConfig {
-  id                        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId                    String    @map("user_id") @db.Uuid
-  name                      String?
-  systemPrompt              String    @map("system_prompt")
-  llmModel                  String    @map("llm_model") // 'gpt-4o' | 'gpt-4o-mini'
-  voicePreference           String?   @map("voice_preference")
-  jobDescription            String?   @map("job_description")
-  candidateResume           String?   @map("candidate_resume")
-  interviewPreferences      Json?     @map("interview_preferences")
-  interviewDurationMinutes  Int?      @map("interview_duration_minutes")
-  uploadedQuestions         Json?     @map("uploaded_questions")
-  createdAt                 DateTime? @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt                 DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
-  user                      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  sessions                  Session[]
+  id        String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String               @map("tenant_id") @db.Uuid
+  userId    String               @map("user_id") @db.Uuid
+  name      String?
+  createdAt DateTime?            @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime?            @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  tenant    Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  versions  AgentConfigVersion[]
 
   @@map("agent_configs")
 }
 
+model AgentConfigVersion {
+  id                       String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  agentConfigId            String      @map("agent_config_id") @db.Uuid
+  version                  Int         @default(1)
+  systemPrompt             String      @map("system_prompt")
+  llmModel                 String      @map("llm_model") // 'gpt-4o' | 'gpt-4o-mini'
+  voicePreference          String?     @map("voice_preference")
+  jobDescription           String?     @map("job_description")
+  candidateResume          String?     @map("candidate_resume")
+  interviewPreferences     Json?       @map("interview_preferences")
+  interviewDurationMinutes Int?        @map("interview_duration_minutes")
+  uploadedQuestions        Json?       @map("uploaded_questions")
+  behaviorSettings         Json?       @map("behavior_settings")
+  createdAt                DateTime?   @default(now()) @map("created_at") @db.Timestamptz
+  agentConfig              AgentConfig @relation(fields: [agentConfigId], references: [id], onDelete: Cascade)
+  sessions                 Session[]
+
+  @@map("agent_config_versions")
+}
+
 model Session {
-  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  agentConfigId String         @map("agent_config_id") @db.Uuid
-  status        String         @default("active") // 'active' | 'completed' | 'aborted'
-  startedAt     DateTime?      @default(now()) @map("started_at") @db.Timestamptz
-  endedAt       DateTime?      @map("ended_at") @db.Timestamptz
-  summary       String?
-  agentConfig   AgentConfig    @relation(fields: [agentConfigId], references: [id], onDelete: Cascade)
-  messages      Message[]
-  sessionEvents SessionEvent[]
+  id                   String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId             String             @map("tenant_id") @db.Uuid
+  agentConfigVersionId String             @map("agent_config_version_id") @db.Uuid
+  status               String             @default("active") // 'active' | 'completed' | 'aborted'
+  startedAt            DateTime?          @default(now()) @map("started_at") @db.Timestamptz
+  endedAt              DateTime?          @map("ended_at") @db.Timestamptz
+  summary              String?
+  tenant               Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agentConfigVersion   AgentConfigVersion @relation(fields: [agentConfigVersionId], references: [id], onDelete: Cascade)
+  messages             Message[]
+  sessionEvents        SessionEvent[]
 
   @@map("sessions")
 }
