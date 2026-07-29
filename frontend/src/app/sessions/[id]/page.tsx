@@ -10,6 +10,20 @@ interface Message {
   role: string;
   content: string;
   createdAt: string;
+  latency?: {
+    utteranceEndToFirstTokenMs: number;
+    firstTokenToFirstAudioMs: number;
+    totalTurnMs: number;
+    sttDurationMs?: number;
+    llmDurationMs?: number;
+    firstTokenMs?: number;
+    ttsDurationMs?: number;
+  } | null;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  } | null;
 }
 
 interface Session {
@@ -199,6 +213,48 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                         <span style={{ color: "var(--text-muted)", fontWeight: "normal" }}>{messageTime}</span>
                       </div>
                       <div style={{ color: "#ffffff", fontSize: "15px" }}>{m.content}</div>
+                      
+                      {!isUser && (m.latency || m.usage) && (
+                        <div
+                          style={{
+                            marginTop: "8px",
+                            paddingTop: "6px",
+                            borderTop: "1px dashed var(--border-color)",
+                            display: "flex",
+                            flexWrap: "wrap",
+                            gap: "12px",
+                            fontSize: "11px",
+                            color: "var(--text-muted)"
+                          }}
+                        >
+                          {m.latency && (
+                            <>
+                              <div>
+                                STT: <strong style={{ color: "#58a6ff" }}>{m.latency.sttDurationMs || 0}ms</strong>
+                              </div>
+                              <div>
+                                LLM: <strong style={{ color: "#56d364" }}>{m.latency.llmDurationMs || 0}ms</strong>{" "}
+                                <span style={{ fontSize: "9px" }}>(first token: {m.latency.firstTokenMs || m.latency.utteranceEndToFirstTokenMs || 0}ms)</span>
+                              </div>
+                              <div>
+                                TTS: <strong style={{ color: "#ffb454" }}>{m.latency.ttsDurationMs || 0}ms</strong>
+                              </div>
+                              <div style={{ color: "var(--border-color)", borderLeft: "1px solid var(--border-color)", height: "12px", margin: "0 4px" }}></div>
+                              <div>
+                                Total Turn: <strong style={{ color: "#ffffff" }}>{m.latency.totalTurnMs}ms</strong>
+                              </div>
+                            </>
+                          )}
+                          {m.usage && (
+                            <div>
+                              Tokens: <strong style={{ color: "#ffffff" }}>{m.usage.totalTokens}</strong>{" "}
+                              <span style={{ fontSize: "9px" }}>
+                                (P: {m.usage.promptTokens} / C: {m.usage.completionTokens})
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })

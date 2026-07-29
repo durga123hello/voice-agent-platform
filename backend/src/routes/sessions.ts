@@ -109,7 +109,30 @@ router.get('/:id/transcript', async (req: Request, res: Response, next: NextFunc
       orderBy: { createdAt: 'asc' }
     });
 
-    res.json(messages);
+    const events = await prisma.sessionEvent.findMany({
+      where: { sessionId: id },
+      orderBy: { createdAt: 'asc' }
+    });
+
+    const turnLatencies = events.filter(e => e.eventType === 'turn_latency');
+    const tokenUsages = events.filter(e => e.eventType === 'token_usage');
+
+    let assistantIndex = 0;
+    const enrichedMessages = messages.map((m) => {
+      if (m.role === 'assistant') {
+        const latency = turnLatencies[assistantIndex]?.metadata || null;
+        const usage = tokenUsages[assistantIndex]?.metadata || null;
+        assistantIndex++;
+        return {
+          ...m,
+          latency,
+          usage
+        };
+      }
+      return m;
+    });
+
+    res.json(enrichedMessages);
   } catch (error) {
     next(error);
   }
@@ -134,6 +157,26 @@ router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => 
     if (!existing) {
       res.status(404).json({ error: 'Session not found.' });
       return;
+    }
+
+    if (status === 'aborted' && existing.status === 'active') {
+      const sessionMessages = await prisma.message.findMany({
+        where: { sessionId: id, role: 'assistant' }
+      });
+      const elapsed = Date.now() - (existing.startedAt ? existing.startedAt.getTime() : Date.now());
+      const turnCount = sessionMessages.length;
+
+      await prisma.sessionEvent.create({
+        data: {
+          sessionId: id,
+          eventType: 'abort',
+          metadata: {
+            abortedAtTurn: turnCount,
+            elapsedTimeMs: elapsed
+          }
+        }
+      }).catch(dbErr => console.error('[Database Log Error] Failed to log abort event:', dbErr));
+      console.log(`[PATCH Session Aborted] Logged abort event for session ${id} at turn ${turnCount} after ${elapsed}ms.`);
     }
 
     const session = await prisma.session.update({

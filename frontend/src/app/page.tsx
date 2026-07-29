@@ -278,6 +278,9 @@ export default function SetupPage() {
         <Link href="/sessions" className="btn btn-secondary">
           View Session History &rarr;
         </Link>
+        <Link href="/analytics" className="btn btn-primary">
+          View Analytics Dashboard &rarr;
+        </Link>
       </div>
 
       {/* API Credentials Setup */}

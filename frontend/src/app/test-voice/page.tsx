@@ -29,6 +29,7 @@ class AudioQueuePlayer {
   private currentSource: AudioBufferSourceNode | null = null;
   private onSpeakingStateChange: (speaking: boolean) => void;
   private onPlaybackComplete: () => void;
+  public onPlaybackStart?: () => void;
 
   constructor(
     onSpeakingStateChange: (speaking: boolean) => void,
@@ -83,6 +84,10 @@ class AudioQueuePlayer {
     if (!this.audioCtx || this.isPlaying || this.queue.length === 0) return;
     this.isPlaying = true;
     this.onSpeakingStateChange(true);
+    
+    if (this.onPlaybackStart) {
+      this.onPlaybackStart();
+    }
 
     const buffer = this.queue.shift()!;
     const source = this.audioCtx.createBufferSource();
@@ -132,9 +137,12 @@ export default function TestVoicePage() {
   const isManualDisconnectRef = useRef<boolean>(false);
   const audioStreamFinishedRef = useRef(false);
 
+  const clientBufferToPlaybackMsRef = useRef<number | null>(null);
+  const firstAudioChunkRecvTimeRef = useRef<number | null>(null);
+
   // Instantiate the Audio Queue Player on mount
   useEffect(() => {
-    audioPlayerRef.current = new AudioQueuePlayer(
+    const player = new AudioQueuePlayer(
       (speaking) => {
         setIsSpeaking(speaking);
       },
@@ -142,11 +150,29 @@ export default function TestVoicePage() {
         // Playback finished locally. Check if the server has finished sending the audio stream.
         if (audioStreamFinishedRef.current) {
           addLog("Assistant audio playback completed. Sending playback_complete to backend.");
-          wsRef.current?.send(JSON.stringify({ type: "playback_complete" }));
+          wsRef.current?.send(JSON.stringify({
+            type: "playback_complete",
+            clientMetrics: {
+              clientBufferToPlaybackMs: clientBufferToPlaybackMsRef.current || 0
+            }
+          }));
           audioStreamFinishedRef.current = false;
+          // Reset turn metrics
+          firstAudioChunkRecvTimeRef.current = null;
+          clientBufferToPlaybackMsRef.current = null;
         }
       }
     );
+
+    player.onPlaybackStart = () => {
+      if (firstAudioChunkRecvTimeRef.current && clientBufferToPlaybackMsRef.current === null) {
+        const diff = Date.now() - firstAudioChunkRecvTimeRef.current;
+        clientBufferToPlaybackMsRef.current = diff;
+        addLog(`[Client Latency] Time from first audio chunk received to start of playback: ${diff}ms`);
+      }
+    };
+
+    audioPlayerRef.current = player;
     return () => {
       if (audioPlayerRef.current) {
         audioPlayerRef.current.stop();
@@ -418,6 +444,9 @@ export default function TestVoicePage() {
                 audioPlayerRef.current.stop();
                 // 2. Notify backend to cancel OpenAI completions and deepgram TTS streams
                 wsRef.current?.send(JSON.stringify({ type: "interrupt" }));
+                // Reset client-side latency refs
+                firstAudioChunkRecvTimeRef.current = null;
+                clientBufferToPlaybackMsRef.current = null;
               }
 
               setMessages((prev) => {
@@ -506,6 +535,9 @@ export default function TestVoicePage() {
 
             case "audio_chunk": {
               const { audio } = data;
+              if (!firstAudioChunkRecvTimeRef.current) {
+                firstAudioChunkRecvTimeRef.current = Date.now();
+              }
               if (audioPlayerRef.current) {
                 audioPlayerRef.current.playChunk(audio);
               }
@@ -518,8 +550,16 @@ export default function TestVoicePage() {
               // If the queue is already empty (not playing), signal playback_complete immediately
               if (audioPlayerRef.current && !audioPlayerRef.current.isPlaying) {
                 addLog("Audio queue is already empty. Signaling playback_complete immediately.");
-                wsRef.current?.send(JSON.stringify({ type: "playback_complete" }));
+                wsRef.current?.send(JSON.stringify({
+                  type: "playback_complete",
+                  clientMetrics: {
+                    clientBufferToPlaybackMs: clientBufferToPlaybackMsRef.current || 0
+                  }
+                }));
                 audioStreamFinishedRef.current = false;
+                // Reset turn metrics
+                firstAudioChunkRecvTimeRef.current = null;
+                clientBufferToPlaybackMsRef.current = null;
               }
               break;
             }

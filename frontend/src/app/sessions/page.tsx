@@ -45,7 +45,10 @@ export default function SessionsPage() {
           &larr; Back to Setup Page
         </Link>
         <Link href="/test-voice" className="btn btn-secondary">
-          Go to Voice Testing Page &rarr;
+          Go to Voice Testing Page
+        </Link>
+        <Link href="/analytics" className="btn btn-primary">
+          View Analytics Dashboard &rarr;
         </Link>
       </div>
 

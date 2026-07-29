@@ -11,6 +11,8 @@ import bcrypt from 'bcryptjs';
 import ffmpegPath from 'ffmpeg-static';
 import { initMediasoup } from './services/mediasoup';
 import { handleSignaling } from './services/signaling';
+import redis from './db/redis';
+import Redis from 'ioredis';
 
 const PORT = process.env.PORT || 3000;
 export const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000000';
@@ -108,6 +110,23 @@ async function startServer() {
     console.log('Successfully connected to PostgreSQL database.');
   } catch (error) {
     console.error('Failed to connect to the database:', error);
+    process.exit(1);
+  }
+
+  // 3b. Connect to Redis
+  try {
+    const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+    console.log(`Connecting to Redis at: ${redisUrl}`);
+    // Create a temporary client with 0 retries and a short timeout to check connection
+    const tempRedis = new Redis(redisUrl, {
+      connectTimeout: 2000,
+      maxRetriesPerRequest: 0
+    });
+    await tempRedis.ping();
+    tempRedis.disconnect();
+    console.log('Successfully connected to Redis.');
+  } catch (error) {
+    console.error('CRITICAL: Failed to connect to Redis on startup check. Exiting...', error);
     process.exit(1);
   }
 
