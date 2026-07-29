@@ -10,13 +10,29 @@ generator client {
 model Tenant {
   id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name         String
+  contactEmail String?       @map("contact_email")
   createdAt    DateTime?     @default(now()) @map("created_at") @db.Timestamptz
   updatedAt    DateTime?     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
   users        User[]
   agentConfigs AgentConfig[]
   sessions     Session[]
+  apiKeys      ApiKey[]
 
   @@map("tenants")
+}
+
+model ApiKey {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  keyHash    String    @map("key_hash")
+  keyPrefix  String    @map("key_prefix")
+  name       String?
+  isActive   Boolean   @default(true) @map("is_active")
+  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("api_keys")
 }
 
 model Provider {

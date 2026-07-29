@@ -2,14 +2,19 @@ import { Router, Request, Response, NextFunction } from 'express';
 import prisma from '../db/client';
 import { endSessionPipeline } from '../services/signaling';
 import { DEFAULT_TENANT_ID } from '../index';
+import { apiKeyAuthOptional } from '../middleware/apiKeyAuth';
 
 const router = Router();
+
+router.use(apiKeyAuthOptional);
+
+const getTenantId = (req: Request) => (req as any).tenantId || DEFAULT_TENANT_ID;
 
 // Fetch all sessions: GET /api/sessions
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const sessions = await prisma.session.findMany({
-      where: { tenantId: DEFAULT_TENANT_ID },
+      where: { tenantId: getTenantId(req) },
       orderBy: { startedAt: 'desc' },
       include: {
         agentConfigVersion: {
@@ -57,7 +62,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       where: {
         agentConfigId,
         agentConfig: {
-          tenantId: DEFAULT_TENANT_ID
+          tenantId: getTenantId(req)
         }
       },
       orderBy: { version: 'desc' }
@@ -71,7 +76,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     // Create session in database linking to latest version
     const session = await prisma.session.create({
       data: {
-        tenantId: DEFAULT_TENANT_ID,
+        tenantId: getTenantId(req),
         agentConfigVersionId: latestVersion.id,
         status: 'active'
       }
@@ -96,7 +101,7 @@ router.get('/:id/transcript', async (req: Request, res: Response, next: NextFunc
 
     // Verify session belongs to default tenant
     const session = await prisma.session.findFirst({
-      where: { id, tenantId: DEFAULT_TENANT_ID }
+      where: { id, tenantId: getTenantId(req) }
     });
 
     if (!session) {
@@ -151,7 +156,7 @@ router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => 
 
     // Verify session belongs to tenant
     const existing = await prisma.session.findFirst({
-      where: { id, tenantId: DEFAULT_TENANT_ID }
+      where: { id, tenantId: getTenantId(req) }
     });
 
     if (!existing) {
@@ -201,7 +206,7 @@ router.post('/:id/end', async (req: Request, res: Response, next: NextFunction) 
 
     // Verify session exists and belongs to tenant
     const session = await prisma.session.findFirst({
-      where: { id, tenantId: DEFAULT_TENANT_ID }
+      where: { id, tenantId: getTenantId(req) }
     });
 
     if (!session) {

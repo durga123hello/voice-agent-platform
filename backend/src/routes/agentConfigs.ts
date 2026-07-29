@@ -1,8 +1,27 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import prisma from '../db/client';
 import { DEFAULT_USER_ID, DEFAULT_TENANT_ID } from '../index';
+import { apiKeyAuthOptional } from '../middleware/apiKeyAuth';
 
 const router = Router();
+
+router.use(apiKeyAuthOptional);
+
+const getTenantId = (req: Request) => (req as any).tenantId || DEFAULT_TENANT_ID;
+
+async function getUserIdForTenant(tenantId: string): Promise<string> {
+  if (tenantId === DEFAULT_TENANT_ID) return DEFAULT_USER_ID;
+  const user = await prisma.user.findFirst({ where: { tenantId } });
+  if (user) return user.id;
+  const dummy = await prisma.user.create({
+    data: {
+      email: `system-${tenantId}@voiceplatform.com`,
+      passwordHash: 'dummy',
+      tenantId
+    }
+  });
+  return dummy.id;
+}
 
 // Helpers for validation
 const VALID_MODELS = ['gpt-4o', 'gpt-4o-mini'];
@@ -67,12 +86,15 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       }
     }
 
+    const tenantId = getTenantId(req);
+    const userId = await getUserIdForTenant(tenantId);
+
     const result = await prisma.$transaction(async (tx) => {
       // Create parent agent config
       const parent = await tx.agentConfig.create({
         data: {
-          tenantId: DEFAULT_TENANT_ID,
-          userId: DEFAULT_USER_ID,
+          tenantId,
+          userId,
           name: name || null
         }
       });
@@ -122,7 +144,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const configs = await prisma.agentConfig.findMany({
-      where: { tenantId: DEFAULT_TENANT_ID },
+      where: { tenantId: getTenantId(req) },
       include: {
         versions: {
           orderBy: { version: 'desc' },
@@ -142,7 +164,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const config = await prisma.agentConfig.findFirst({
-      where: { id, tenantId: DEFAULT_TENANT_ID },
+      where: { id, tenantId: getTenantId(req) },
       include: {
         versions: {
           orderBy: { version: 'desc' },
@@ -181,7 +203,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
     // Verify config exists and fetch latest version
     const config = await prisma.agentConfig.findFirst({
-      where: { id, tenantId: DEFAULT_TENANT_ID },
+      where: { id, tenantId: getTenantId(req) },
       include: {
         versions: {
           orderBy: { version: 'desc' },
@@ -292,7 +314,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
 
     // Verify config exists
     const existing = await prisma.agentConfig.findFirst({
-      where: { id, tenantId: DEFAULT_TENANT_ID }
+      where: { id, tenantId: getTenantId(req) }
     });
     if (!existing) {
       res.status(404).json({ error: 'Agent config not found.' });
