@@ -8,17 +8,34 @@ generator client {
 }
 
 model Tenant {
-  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name         String
-  contactEmail String?       @map("contact_email")
-  createdAt    DateTime?     @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt    DateTime?     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
-  users        User[]
-  agentConfigs AgentConfig[]
-  sessions     Session[]
-  apiKeys      ApiKey[]
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name          String
+  contactEmail  String?       @unique @map("contact_email")
+  passwordHash  String?       @map("password_hash")
+  emailVerified Boolean       @default(false) @map("email_verified")
+  createdAt     DateTime?     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime?     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  users         User[]
+  agentConfigs  AgentConfig[]
+  sessions      Session[]
+  apiKeys       ApiKey[]
+  otpCodes      OtpCode[]
 
   @@map("tenants")
+}
+
+model OtpCode {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String?  @map("tenant_id") @db.Uuid
+  email     String
+  codeHash  String   @map("code_hash")
+  purpose   String   // 'signup' | 'login'
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("otp_codes")
 }
 
 model ApiKey {
