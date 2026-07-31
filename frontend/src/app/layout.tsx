@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import DashboardWrapper from "./DashboardWrapper";
 
 export const metadata: Metadata = {
   title: "Voice AI Agent Platform",
@@ -13,7 +14,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        <DashboardWrapper>
+          {children}
+        </DashboardWrapper>
+      </body>
     </html>
   );
 }

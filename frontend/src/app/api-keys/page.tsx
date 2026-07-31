@@ -13,7 +13,7 @@ interface ApiKeyData {
   lastUsedAt: string | null;
 }
 
-export default function DashboardPage() {
+export default function ApiKeysPage() {
   const router = useRouter();
   const [token, setToken] = useState<string | null>(null);
   const [orgName, setOrgName] = useState("");
@@ -48,7 +48,8 @@ export default function DashboardPage() {
       });
       if (!meRes.ok) {
         if (meRes.status === 401) {
-          handleLogout();
+          localStorage.removeItem("sessionToken");
+          router.push("/login");
           return;
         }
         throw new Error("Failed to fetch organization profile");
@@ -135,41 +136,22 @@ export default function DashboardPage() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("sessionToken");
-    localStorage.removeItem("orgName");
-    localStorage.removeItem("tenantId");
-    router.push("/login");
-  };
-
   if (loading) {
     return (
-      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "60vh" }}>
-        <h3>Loading console dashboard...</h3>
+      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", minHeight: "50vh" }}>
+        <h3>Loading keys console...</h3>
       </div>
     );
   }
 
   return (
-    <div className="container" style={{ maxWidth: "960px", padding: "0 20px" }}>
+    <div style={{ maxWidth: "960px", margin: "0 auto", padding: "0 10px" }}>
       
-      {/* Header bar */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 0", borderBottom: "1px solid var(--border-color)", marginBottom: "30px" }}>
-        <div>
-          <h1 style={{ border: "none", padding: 0, margin: 0, fontSize: "24px", fontWeight: "800" }}>
-            Developer Portal
-          </h1>
-          <p style={{ color: "var(--text-muted)", fontSize: "14px", margin: "4px 0 0 0" }}>
-            Manage programmatic API credentials for your voice platform integrations.
-          </p>
-        </div>
-        <button
-          onClick={handleLogout}
-          className="btn"
-          style={{ backgroundColor: "rgba(248, 81, 73, 0.15)", color: "#ff7b72", border: "1px solid rgba(248, 81, 73, 0.4)", fontSize: "13px" }}
-        >
-          Logout
-        </button>
+      <div style={{ marginBottom: "24px" }}>
+        <h2 style={{ margin: 0, fontWeight: "800" }}>API Keys & Security</h2>
+        <p style={{ color: "var(--text-muted)", fontSize: "14px", margin: "4px 0 0 0" }}>
+          Manage your organization's developer credentials.
+        </p>
       </div>
 
       {error && (
@@ -180,7 +162,7 @@ export default function DashboardPage() {
 
       {/* Organization info panel */}
       <div className="card">
-        <h3 style={{ margin: "0 0 16px 0", color: "#58a6ff" }}>Organization Information</h3>
+        <h3 style={{ margin: "0 0 16px 0", color: "#58a6ff", fontSize: "16px" }}>Organization Information</h3>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px", fontSize: "14px" }}>
           <div>
             <span style={{ color: "var(--text-muted)", display: "block", marginBottom: "4px" }}>Organization Name</span>
@@ -199,16 +181,16 @@ export default function DashboardPage() {
 
       {/* API Key generation block */}
       <div className="card">
-        <h3 style={{ margin: "0 0 8px 0", color: "#58a6ff" }}>Generate API Key</h3>
+        <h3 style={{ margin: "0 0 8px 0", color: "#58a6ff", fontSize: "16px" }}>Generate API Key</h3>
         <p style={{ color: "var(--text-muted)", fontSize: "13px", marginBottom: "20px" }}>
-          API keys are used by external applications to create configurations and stream agent sessions programmatically.
+          Use API keys to authenticate calls to the assistants platform from your server backend or external workflows.
         </p>
 
         {newRawKey && (
           <div style={{ backgroundColor: "rgba(35, 134, 54, 0.15)", border: "1px solid rgba(35, 134, 54, 0.4)", color: "#56d364", padding: "16px", borderRadius: "6px", marginBottom: "24px" }}>
-            <strong style={{ display: "block", marginBottom: "8px" }}>🔑 API Key Generated Successfully!</strong>
+            <strong style={{ display: "block", marginBottom: "8px" }}>🔑 API Key Generated!</strong>
             <p style={{ fontSize: "13px", color: "var(--text-color)", margin: "0 0 12px 0" }}>
-              Copy this secret key now. For security purposes, it will <strong>never be shown again</strong>.
+              Copy this secret key now. For safety, it will <strong>never be shown again</strong>.
             </p>
             <div style={{ display: "flex", gap: "8px" }}>
               <input
@@ -234,10 +216,10 @@ export default function DashboardPage() {
 
         <form onSubmit={handleCreateKey} style={{ display: "flex", gap: "12px", alignItems: "flex-end" }}>
           <div className="form-group" style={{ flex: 1, margin: 0 }}>
-            <label>Key Name / Label</label>
+            <label>Key Label</label>
             <input
               type="text"
-              placeholder="e.g. Production server key"
+              placeholder="e.g. Production API Credential"
               value={keyLabel}
               onChange={(e) => setKeyLabel(e.target.value)}
               required
@@ -256,10 +238,10 @@ export default function DashboardPage() {
 
       {/* Existing Keys list */}
       <div className="card">
-        <h3 style={{ margin: "0 0 16px 0", color: "#58a6ff" }}>Existing Keys</h3>
+        <h3 style={{ margin: "0 0 16px 0", color: "#58a6ff", fontSize: "16px" }}>Existing Developer Keys</h3>
         {keys.length === 0 ? (
           <div style={{ color: "var(--text-muted)", fontStyle: "italic", fontSize: "14px" }}>
-            No active API keys found. Use the section above to generate your first key.
+            No active API keys found.
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>

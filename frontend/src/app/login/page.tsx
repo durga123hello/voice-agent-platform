@@ -33,7 +33,7 @@ export default function LoginPage() {
       localStorage.setItem("orgName", data.tenant.name);
       localStorage.setItem("tenantId", data.tenant.id);
 
-      router.push("/dashboard");
+      router.push("/");
     } catch (err: any) {
       setError(err.message);
     } finally {
