@@ -8,7 +8,6 @@ export default function SignupPage() {
   const router = useRouter();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [step, setStep] = useState<"signup" | "otp">("signup");
   const [otp, setOtp] = useState("");
   const [error, setError] = useState("");
@@ -24,7 +23,7 @@ export default function SignupPage() {
       const res = await fetch("http://localhost:3000/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
+        body: JSON.stringify({ name, email }),
       });
 
       const data = await res.json();
@@ -64,10 +63,15 @@ export default function SignupPage() {
         throw new Error(data.error || "OTP verification failed");
       }
 
-      setMessage("Email verified successfully! Redirecting to login...");
+      // Store JWT token directly in local storage since OTP verify logged us in
+      localStorage.setItem("sessionToken", data.token);
+      localStorage.setItem("orgName", data.tenant.name);
+      localStorage.setItem("tenantId", data.tenant.id);
+
+      setMessage("Email verified successfully! Logging you in...");
       setTimeout(() => {
-        router.push("/login");
-      }, 1500);
+        router.push("/");
+      }, 1200);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -109,22 +113,11 @@ export default function SignupPage() {
               <div className="form-group" style={{ margin: 0 }}>
                 <label>Contact Email</label>
                 <input
-                  type="text"
+                  type="email"
                   required
                   placeholder="e.g. admin@acme.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                />
-              </div>
-
-              <div className="form-group" style={{ margin: 0 }}>
-                <label>Password</label>
-                <input
-                  type="password"
-                  required
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
                 />
               </div>
 
@@ -198,7 +191,7 @@ export default function SignupPage() {
                   opacity: loading ? 0.7 : 1,
                 }}
               >
-                {loading ? "Verifying..." : "Verify Code"}
+                {loading ? "Verifying..." : "Verify & Log In"}
               </button>
             </form>
 

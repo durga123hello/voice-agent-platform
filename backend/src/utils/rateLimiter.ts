@@ -37,3 +37,34 @@ export function rateLimiter(req: Request, res: Response, next: NextFunction) {
   
   next();
 }
+
+const emailCache = new Map<string, { count: number; resetTime: number }>();
+const EMAIL_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_EMAIL_REQUESTS = 3;
+
+export function emailRateLimiter(req: Request, res: Response, next: NextFunction) {
+  const email = (req.body.email || '').trim().toLowerCase();
+  if (!email) {
+    next();
+    return;
+  }
+
+  const now = Date.now();
+  let record = emailCache.get(email);
+  if (!record || record.resetTime < now) {
+    record = { count: 0, resetTime: now + EMAIL_LIMIT_WINDOW_MS };
+  }
+
+  // Only count if it's the actual rate limited request attempt
+  record.count++;
+  emailCache.set(email, record);
+
+  if (record.count > MAX_EMAIL_REQUESTS) {
+    res.status(429).json({
+      error: 'Too many OTP requests for this email address. Please try again after 10 minutes.'
+    });
+    return;
+  }
+
+  next();
+}
