@@ -8,6 +8,7 @@ interface ApiKeyData {
   tenantId: string;
   keyPrefix: string;
   name: string | null;
+  keyType: string;
   isActive: boolean;
   createdAt: string;
   lastUsedAt: string | null;
@@ -22,6 +23,7 @@ export default function ApiKeysPage() {
   
   const [keys, setKeys] = useState<ApiKeyData[]>([]);
   const [keyLabel, setKeyLabel] = useState("");
+  const [keyType, setKeyType] = useState<"private" | "public">("private");
   const [newRawKey, setNewRawKey] = useState<string | null>(null);
   
   const [loading, setLoading] = useState(true);
@@ -89,7 +91,7 @@ export default function ApiKeysPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ name: keyLabel })
+        body: JSON.stringify({ name: keyLabel, type: keyType })
       });
 
       const data = await res.json();
@@ -150,7 +152,7 @@ export default function ApiKeysPage() {
       <div style={{ marginBottom: "24px" }}>
         <h2 style={{ margin: 0, fontWeight: "800" }}>API Keys & Security</h2>
         <p style={{ color: "var(--text-muted)", fontSize: "14px", margin: "4px 0 0 0" }}>
-          Manage your organization's developer credentials.
+          Manage your organization's developer credentials and endpoint security scopes.
         </p>
       </div>
 
@@ -183,8 +185,25 @@ export default function ApiKeysPage() {
       <div className="card">
         <h3 style={{ margin: "0 0 8px 0", color: "#58a6ff", fontSize: "16px" }}>Generate API Key</h3>
         <p style={{ color: "var(--text-muted)", fontSize: "13px", marginBottom: "20px" }}>
-          Use API keys to authenticate calls to the assistants platform from your server backend or external workflows.
+          Use API keys to authenticate requests. We split keys into two security tiers to match industry standards:
         </p>
+
+        {/* Warning Information Banner */}
+        <div style={{
+          backgroundColor: "#1f242c",
+          borderLeft: "4px solid #f0883e",
+          padding: "12px 16px",
+          borderRadius: "4px",
+          fontSize: "13px",
+          marginBottom: "24px",
+          lineHeight: "1.6"
+        }}>
+          💡 <strong>Key Scope Security Rules:</strong>
+          <ul style={{ margin: "8px 0 0 0", paddingLeft: "20px" }}>
+            <li><strong>Private keys (`sk_...`)</strong>: Full write and management permissions. For server-to-server operations only. <em>Never expose these in client-side code.</em></li>
+            <li><strong>Public keys (`pk_...`)</strong>: Safe for browser, mobile, or WebRTC clients. <em>Can only start new live sessions against existing agent configurations.</em></li>
+          </ul>
+        </div>
 
         {newRawKey && (
           <div style={{ backgroundColor: "rgba(35, 134, 54, 0.15)", border: "1px solid rgba(35, 134, 54, 0.4)", color: "#56d364", padding: "16px", borderRadius: "6px", marginBottom: "24px" }}>
@@ -214,22 +233,35 @@ export default function ApiKeysPage() {
           </div>
         )}
 
-        <form onSubmit={handleCreateKey} style={{ display: "flex", gap: "12px", alignItems: "flex-end" }}>
-          <div className="form-group" style={{ flex: 1, margin: 0 }}>
+        <form onSubmit={handleCreateKey} style={{ display: "flex", gap: "16px", alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div className="form-group" style={{ flex: 2, minWidth: "240px", margin: 0 }}>
             <label>Key Label</label>
             <input
               type="text"
-              placeholder="e.g. Production API Credential"
+              placeholder="e.g. Production Backend server key"
               value={keyLabel}
               onChange={(e) => setKeyLabel(e.target.value)}
               required
             />
           </div>
+
+          <div className="form-group" style={{ flex: 1, minWidth: "160px", margin: 0 }}>
+            <label>Key Scope Type</label>
+            <select
+              value={keyType}
+              onChange={(e) => setKeyType(e.target.value as "private" | "public")}
+              style={{ height: "40px" }}
+            >
+              <option value="private">Private (sk_live_...)</option>
+              <option value="public">Public (pk_live_...)</option>
+            </select>
+          </div>
+
           <button
             type="submit"
             disabled={submitting}
             className="btn"
-            style={{ backgroundColor: "var(--primary-color)", color: "#ffffff", height: "40px", padding: "0 20px" }}
+            style={{ backgroundColor: "var(--primary-color)", color: "#ffffff", height: "40px", padding: "0 24px" }}
           >
             {submitting ? "Generating..." : "Create API Key"}
           </button>
@@ -250,6 +282,7 @@ export default function ApiKeysPage() {
                 <tr style={{ borderBottom: "2px solid var(--border-color)", textAlign: "left" }}>
                   <th style={{ padding: "10px 8px", color: "var(--text-muted)" }}>Label</th>
                   <th style={{ padding: "10px 8px", color: "var(--text-muted)" }}>Prefix</th>
+                  <th style={{ padding: "10px 8px", color: "var(--text-muted)" }}>Key Type</th>
                   <th style={{ padding: "10px 8px", color: "var(--text-muted)" }}>Created At</th>
                   <th style={{ padding: "10px 8px", color: "var(--text-muted)" }}>Status</th>
                   <th style={{ padding: "10px 8px", textAlign: "right" }}>Actions</th>
@@ -260,6 +293,20 @@ export default function ApiKeysPage() {
                   <tr key={k.id} style={{ borderBottom: "1px solid var(--border-color)" }}>
                     <td style={{ padding: "12px 8px", fontWeight: "600" }}>{k.name || "Unnamed key"}</td>
                     <td style={{ padding: "12px 8px", fontFamily: "monospace", color: "#58a6ff" }}>{k.keyPrefix}</td>
+                    <td style={{ padding: "12px 8px" }}>
+                      <span style={{
+                        display: "inline-block",
+                        padding: "2px 8px",
+                        borderRadius: "4px",
+                        fontSize: "11px",
+                        fontWeight: "700",
+                        textTransform: "uppercase",
+                        backgroundColor: k.keyType === "public" ? "rgba(88, 166, 255, 0.15)" : "rgba(240, 136, 62, 0.15)",
+                        color: k.keyType === "public" ? "#58a6ff" : "#f0883e"
+                      }}>
+                        {k.keyType || "private"}
+                      </span>
+                    </td>
                     <td style={{ padding: "12px 8px", color: "var(--text-muted)" }}>
                       {new Date(k.createdAt).toLocaleDateString()} {new Date(k.createdAt).toLocaleTimeString()}
                     </td>

@@ -23,14 +23,16 @@ async function dashboardOrApiKeyAuth(req: Request, res: Response, next: NextFunc
   // we can let it pass if no auth header is present and we're not in production.
   // But for key generation, we require active auth.
   if (!token) {
-    return res.status(401).json({ error: 'Unauthorized: Missing credentials' });
+    res.status(401).json({ error: 'Unauthorized: Missing credentials' });
+    return;
   }
 
-  if (token.startsWith('vap_live_')) {
+  if (token.startsWith('vap_live_') || token.startsWith('sk_live_') || token.startsWith('pk_live_')) {
     // Treat as raw API Key
     const parts = token.split('_');
-    if (parts.length < 4 || parts[0] !== 'vap' || parts[1] !== 'live') {
-      return res.status(401).json({ error: 'Unauthorized: Invalid API Key format' });
+    if (parts.length < 4 || (parts[0] !== 'vap' && parts[0] !== 'sk' && parts[0] !== 'pk') || parts[1] !== 'live') {
+      res.status(401).json({ error: 'Unauthorized: Invalid API Key format' });
+      return;
     }
     const keyPrefix = `${parts[0]}_${parts[1]}_${parts[2]}`;
     const keyHash = hashApiKey(token);
@@ -40,24 +42,28 @@ async function dashboardOrApiKeyAuth(req: Request, res: Response, next: NextFunc
         where: { keyPrefix, keyHash, isActive: true }
       });
       if (!apiKeyRow) {
-        return res.status(401).json({ error: 'Unauthorized: Invalid or inactive API Key' });
+        res.status(401).json({ error: 'Unauthorized: Invalid or inactive API Key' });
+        return;
       }
       (req as any).tenantId = apiKeyRow.tenantId;
       next();
     } catch (err) {
-      return res.status(500).json({ error: 'Internal server error during auth' });
+      res.status(500).json({ error: 'Internal server error during auth' });
+      return;
     }
   } else {
     // Treat as JWT session token
     try {
       const payload = jwt.verify(token, JWT_SECRET) as { tenantId: string; email: string };
       if (!payload || !payload.tenantId) {
-        return res.status(401).json({ error: 'Unauthorized: Invalid session token' });
+        res.status(401).json({ error: 'Unauthorized: Invalid session token' });
+        return;
       }
       (req as any).tenantId = payload.tenantId;
       next();
     } catch (err) {
-      return res.status(401).json({ error: 'Unauthorized: Session expired or invalid' });
+      res.status(401).json({ error: 'Unauthorized: Session expired or invalid' });
+      return;
     }
   }
 }
@@ -91,7 +97,7 @@ router.use('/api-keys', dashboardOrApiKeyAuth);
 router.post('/api-keys', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId; // Securely resolved from auth token
-    const { name } = req.body;
+    const { name, type } = req.body;
 
     if (!tenantId) {
       res.status(400).json({ error: 'tenantId is required' });
@@ -107,7 +113,8 @@ router.post('/api-keys', async (req: Request, res: Response, next: NextFunction)
       return;
     }
 
-    const { rawKey, keyPrefix } = generateApiKey();
+    const keyType = type === 'public' ? 'public' : 'private';
+    const { rawKey, keyPrefix } = generateApiKey(keyType);
     const keyHash = hashApiKey(rawKey);
 
     const apiKeyRow = await prisma.apiKey.create({
@@ -115,7 +122,8 @@ router.post('/api-keys', async (req: Request, res: Response, next: NextFunction)
         tenantId,
         keyPrefix,
         keyHash,
-        name: name || null
+        name: name || null,
+        keyType
       }
     });
 
@@ -127,6 +135,7 @@ router.post('/api-keys', async (req: Request, res: Response, next: NextFunction)
         tenantId: apiKeyRow.tenantId,
         keyPrefix: apiKeyRow.keyPrefix,
         name: apiKeyRow.name,
+        keyType: apiKeyRow.keyType,
         isActive: apiKeyRow.isActive,
         createdAt: apiKeyRow.createdAt,
         lastUsedAt: apiKeyRow.lastUsedAt
@@ -152,6 +161,7 @@ router.get('/api-keys', async (req: Request, res: Response, next: NextFunction) 
       tenantId: k.tenantId,
       keyPrefix: k.keyPrefix,
       name: k.name,
+      keyType: k.keyType,
       isActive: k.isActive,
       createdAt: k.createdAt,
       lastUsedAt: k.lastUsedAt
@@ -184,7 +194,7 @@ router.post('/api-keys/rotate', async (req: Request, res: Response, next: NextFu
       return;
     }
 
-    const { rawKey, keyPrefix } = generateApiKey();
+    const { rawKey, keyPrefix } = generateApiKey(oldKey.keyType as 'public' | 'private');
     const keyHash = hashApiKey(rawKey);
 
     const [newKey, revokedKey] = await prisma.$transaction([
@@ -193,7 +203,8 @@ router.post('/api-keys/rotate', async (req: Request, res: Response, next: NextFu
           tenantId,
           keyPrefix,
           keyHash,
-          name: name || oldKey.name
+          name: name || oldKey.name,
+          keyType: oldKey.keyType
         }
       }),
       prisma.apiKey.update({
@@ -210,6 +221,7 @@ router.post('/api-keys/rotate', async (req: Request, res: Response, next: NextFu
         tenantId: newKey.tenantId,
         keyPrefix: newKey.keyPrefix,
         name: newKey.name,
+        keyType: newKey.keyType,
         isActive: newKey.isActive,
         createdAt: newKey.createdAt,
         lastUsedAt: newKey.lastUsedAt
@@ -219,6 +231,7 @@ router.post('/api-keys/rotate', async (req: Request, res: Response, next: NextFu
         tenantId: revokedKey.tenantId,
         keyPrefix: revokedKey.keyPrefix,
         name: revokedKey.name,
+        keyType: revokedKey.keyType,
         isActive: revokedKey.isActive,
         createdAt: revokedKey.createdAt,
         lastUsedAt: revokedKey.lastUsedAt
@@ -260,6 +273,7 @@ router.post('/api-keys/revoke', async (req: Request, res: Response, next: NextFu
         tenantId: revokedKey.tenantId,
         keyPrefix: revokedKey.keyPrefix,
         name: revokedKey.name,
+        keyType: revokedKey.keyType,
         isActive: revokedKey.isActive,
         createdAt: revokedKey.createdAt,
         lastUsedAt: revokedKey.lastUsedAt

@@ -15,13 +15,15 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
   }
 
   if (!rawKey) {
-    return res.status(401).json({ error: 'Unauthorized: Missing API Key' });
+    res.status(401).json({ error: 'Unauthorized: Missing API Key' });
+    return;
   }
 
-  // Parse prefix: format is vap_live_[prefix]_[secret]
+  // Parse prefix: format is [sk|pk|vap]_live_[prefix]_[secret]
   const parts = rawKey.split('_');
-  if (parts.length < 4 || parts[0] !== 'vap' || parts[1] !== 'live') {
-    return res.status(401).json({ error: 'Unauthorized: Invalid API Key format' });
+  if (parts.length < 4 || (parts[0] !== 'vap' && parts[0] !== 'sk' && parts[0] !== 'pk') || parts[1] !== 'live') {
+    res.status(401).json({ error: 'Unauthorized: Invalid API Key format' });
+    return;
   }
 
   const keyPrefix = `${parts[0]}_${parts[1]}_${parts[2]}`;
@@ -37,7 +39,25 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
     });
 
     if (!apiKeyRow) {
-      return res.status(401).json({ error: 'Unauthorized: Invalid or inactive API Key' });
+      res.status(401).json({ error: 'Unauthorized: Invalid or inactive API Key' });
+      return;
+    }
+
+    // Scope Enforcement for PUBLIC keys
+    if (apiKeyRow.keyType === 'public') {
+      const path = req.originalUrl || req.path;
+      const isSessionCreation = req.method === 'POST' && (
+        path === '/api/sessions' || 
+        path === '/api/sessions/' || 
+        path.startsWith('/api/sessions?') ||
+        path === '/sessions' ||
+        path === '/sessions/' ||
+        path.startsWith('/sessions?')
+      );
+      if (!isSessionCreation) {
+        res.status(403).json({ error: 'Forbidden: Public keys are restricted to session creation only.' });
+        return;
+      }
     }
 
     // Update last_used_at asynchronously
@@ -52,7 +72,8 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
     next();
   } catch (error) {
     console.error('[API Key Auth Error]', error);
-    return res.status(500).json({ error: 'Internal server error during authentication' });
+    res.status(500).json({ error: 'Internal server error during authentication' });
+    return;
   }
 }
 
@@ -71,13 +92,15 @@ export async function apiKeyAuthOptional(req: Request, res: Response, next: Next
   // If no key is provided at all, let it slide to the next middleware (fallback to DEFAULT_TENANT_ID)
   if (!rawKey) {
     (req as any).tenantId = null;
-    return next();
+    next();
+    return;
   }
 
   // If key is present but format is wrong, reject it
   const parts = rawKey.split('_');
-  if (parts.length < 4 || parts[0] !== 'vap' || parts[1] !== 'live') {
-    return res.status(401).json({ error: 'Unauthorized: Invalid API Key format' });
+  if (parts.length < 4 || (parts[0] !== 'vap' && parts[0] !== 'sk' && parts[0] !== 'pk') || parts[1] !== 'live') {
+    res.status(401).json({ error: 'Unauthorized: Invalid API Key format' });
+    return;
   }
 
   const keyPrefix = `${parts[0]}_${parts[1]}_${parts[2]}`;
@@ -93,7 +116,25 @@ export async function apiKeyAuthOptional(req: Request, res: Response, next: Next
     });
 
     if (!apiKeyRow) {
-      return res.status(401).json({ error: 'Unauthorized: Invalid or inactive API Key' });
+      res.status(401).json({ error: 'Unauthorized: Invalid or inactive API Key' });
+      return;
+    }
+
+    // Scope Enforcement for PUBLIC keys
+    if (apiKeyRow.keyType === 'public') {
+      const path = req.originalUrl || req.path;
+      const isSessionCreation = req.method === 'POST' && (
+        path === '/api/sessions' || 
+        path === '/api/sessions/' || 
+        path.startsWith('/api/sessions?') ||
+        path === '/sessions' ||
+        path === '/sessions/' ||
+        path.startsWith('/sessions?')
+      );
+      if (!isSessionCreation) {
+        res.status(403).json({ error: 'Forbidden: Public keys are restricted to session creation only.' });
+        return;
+      }
     }
 
     // Update last_used_at asynchronously
@@ -108,6 +149,7 @@ export async function apiKeyAuthOptional(req: Request, res: Response, next: Next
     next();
   } catch (error) {
     console.error('[API Key Auth Error]', error);
-    return res.status(500).json({ error: 'Internal server error during authentication' });
+    res.status(500).json({ error: 'Internal server error during authentication' });
+    return;
   }
 }
