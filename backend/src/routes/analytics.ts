@@ -105,6 +105,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
     const deepgramNetworkRttLatencies: number[] = [];
     const deepgramProcessingLatencies: number[] = [];
     const interimTranscriptCounts: number[] = [];
+    const webrtcRttLatencies: number[] = [];
 
     // 10. Token Usage
     let totalTokens = 0;
@@ -113,6 +114,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
     let openaiErrorCount = 0;
     let deepgramSttErrorCount = 0;
     let deepgramTtsErrorCount = 0;
+    let playbackErrorCount = 0;
 
     let abortedTurnSum = 0;
     let abortedElapsedTimeSum = 0;
@@ -216,11 +218,16 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
           if (typeof meta.interim_transcript_count === 'number') {
             interimTranscriptCounts.push(meta.interim_transcript_count);
           }
+          if (typeof meta.webrtc_rtt_ms === 'number') {
+            webrtcRttLatencies.push(meta.webrtc_rtt_ms);
+          }
         } else if (evt.eventType === 'provider_error' && evt.metadata) {
           const meta = evt.metadata as any;
           if (meta.provider === 'openai') openaiErrorCount++;
           else if (meta.provider === 'deepgram_stt') deepgramSttErrorCount++;
           else if (meta.provider === 'deepgram_tts') deepgramTtsErrorCount++;
+        } else if (evt.eventType === 'playback_error') {
+          playbackErrorCount++;
         } else if (evt.eventType === 'abort' && evt.metadata) {
           const meta = evt.metadata as any;
           if (typeof meta.abortedAtTurn === 'number') {
@@ -274,6 +281,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
       const sessionDeepgramNetworkRttLatencies: number[] = [];
       const sessionDeepgramProcessingLatencies: number[] = [];
       const sessionInterimTranscriptCounts: number[] = [];
+      const sessionWebrtcRttLatencies: number[] = [];
 
       s.sessionEvents.forEach((evt) => {
         if (evt.eventType === 'interruption') {
@@ -367,6 +375,9 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
           sessionDeepgramNetworkRttLatencies.push(deepgramNetworkRtt);
           sessionDeepgramProcessingLatencies.push(deepgramProcessing);
           sessionInterimTranscriptCounts.push(interimTranscriptCount);
+          if (typeof meta.webrtc_rtt_ms === 'number') {
+            sessionWebrtcRttLatencies.push(meta.webrtc_rtt_ms);
+          }
         }
       });
 
@@ -438,6 +449,10 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
         ? sessionInterimTranscriptCounts.reduce((a, b) => a + b, 0) / sessionInterimTranscriptCounts.length
         : 0;
 
+      const avgWebrtcRtt = sessionWebrtcRttLatencies.length > 0
+        ? sessionWebrtcRttLatencies.reduce((a, b) => a + b, 0) / sessionWebrtcRttLatencies.length
+        : 0;
+
       return {
         id: s.id,
         startedAt: s.startedAt,
@@ -462,6 +477,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
         avgDeepgramNetworkRttMs: Math.round(avgDeepgramNetworkRtt),
         avgDeepgramProcessingMs: Math.round(avgDeepgramProcessing),
         avgInterimTranscriptCount: Math.round(avgInterimTranscriptCount),
+        avgWebrtcRttMs: Math.round(avgWebrtcRtt),
         totalTokensUsed: sessionTokens,
         turnsCount: s.messages.length,
         interruptionsCount: sessionInterruptions,
@@ -581,6 +597,11 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
       : 0;
     const deepgramProcessingP95 = Math.round(getPercentile(deepgramProcessingLatencies, 95));
 
+    const webrtcRttAvg = webrtcRttLatencies.length > 0
+      ? Math.round(webrtcRttLatencies.reduce((a, b) => a + b, 0) / webrtcRttLatencies.length)
+      : 0;
+    const webrtcRttP95 = Math.round(getPercentile(webrtcRttLatencies, 95));
+
     const interimTranscriptCountAvg = interimTranscriptCounts.length > 0
       ? Number((interimTranscriptCounts.reduce((a, b) => a + b, 0) / interimTranscriptCounts.length).toFixed(1))
       : 0;
@@ -653,12 +674,20 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
             avgMs: firstTokenCheckAvg,
             p95Ms: firstTokenCheckP95
           },
+          webrtcRtt: {
+            avgMs: webrtcRttAvg,
+            p95Ms: webrtcRttP95
+          },
           // Sub-components details
           subComponents: {
             // STT
-            micToMediasoup: { avgMs: null, p95Ms: null, reason: 'skipped_clock_sync_limits' },
-            mediasoupToFfmpeg: { avgMs: null, p95Ms: null, reason: 'skipped_continuous_stream' },
-            ffmpegTranscode: { avgMs: null, p95Ms: null, reason: 'skipped_out_of_process_udp' },
+            micToMediasoup: {
+              avgMs: Math.round(webrtcRttAvg / 2),
+              p95Ms: Math.round(webrtcRttP95 / 2),
+              note: 'Estimated as 1/2 of WebRTC round-trip time (RTT)'
+            },
+            mediasoupToFfmpeg: { avgMs: null, p95Ms: null, reason: 'skipped_clock_sync_limits' },
+            ffmpegTranscode: { avgMs: null, p95Ms: null, reason: 'skipped_clock_sync_limits' },
             deepgramNetworkAndEndpointing: {
               avgMs: deepgramNetworkAndEndpointingAvg,
               p95Ms: deepgramNetworkAndEndpointingP95,
@@ -700,6 +729,11 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
             clientBufferToPlayback: {
               avgMs: clientBufferToPlaybackAvg,
               p95Ms: clientBufferToPlaybackP95
+            },
+            ttsToSpeakerNetworkTransit: {
+              avgMs: Math.round(webrtcRttAvg / 2),
+              p95Ms: Math.round(webrtcRttP95 / 2),
+              note: 'Estimated as 1/2 of WebRTC round-trip time (RTT)'
             }
           }
         },
@@ -708,6 +742,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
           openaiErrorCount,
           deepgramSttErrorCount,
           deepgramTtsErrorCount,
+          playbackErrorCount,
           avgAbortedTurn,
           avgAbortedElapsedTimeSeconds,
           avgBargeInRate,

@@ -22,14 +22,23 @@ interface ChatMessage {
   isStreaming?: boolean;
 }
 
+interface QueueItem {
+  buffer: AudioBuffer;
+  chunkIndex: number;
+  recvTime: number;
+}
+
 class AudioQueuePlayer {
   private audioCtx: AudioContext | null = null;
-  private queue: AudioBuffer[] = [];
+  private queue: QueueItem[] = [];
   public isPlaying = false;
   private currentSource: AudioBufferSourceNode | null = null;
   private onSpeakingStateChange: (speaking: boolean) => void;
   private onPlaybackComplete: () => void;
   public onPlaybackStart?: () => void;
+  public onChunkStart?: (chunkIndex: number, durationMs: number, recvTime: number) => void;
+  public onChunkEnd?: (chunkIndex: number) => void;
+  public onPlaybackError?: (chunkIndex: number, errorMsg: string) => void;
 
   constructor(
     onSpeakingStateChange: (speaking: boolean) => void,
@@ -48,8 +57,9 @@ class AudioQueuePlayer {
     }
   }
 
-  async playChunk(base64Audio: string) {
+  async playChunk(base64Audio: string, chunkIndex: number) {
     this.init();
+    const recvTime = Date.now();
 
     try {
       const binaryString = window.atob(base64Audio);
@@ -61,10 +71,13 @@ class AudioQueuePlayer {
       const arrayBuffer = bytes.buffer;
 
       const audioBuffer = await this.audioCtx!.decodeAudioData(arrayBuffer);
-      this.queue.push(audioBuffer);
+      this.queue.push({ buffer: audioBuffer, chunkIndex, recvTime });
       this.playNext();
-    } catch (e) {
+    } catch (e: any) {
       console.error("Error decoding audio chunk:", e);
+      if (this.onPlaybackError) {
+        this.onPlaybackError(chunkIndex, e?.message || "Audio decode error");
+      }
     }
   }
 
@@ -89,15 +102,29 @@ class AudioQueuePlayer {
       this.onPlaybackStart();
     }
 
-    const buffer = this.queue.shift()!;
+    const item = this.queue.shift()!;
+    const buffer = item.buffer;
+    const chunkIndex = item.chunkIndex;
+    const recvTime = item.recvTime;
+    const durationMs = Math.round(buffer.duration * 1000);
+
     const source = this.audioCtx.createBufferSource();
     source.buffer = buffer;
     source.connect(this.audioCtx.destination);
     this.currentSource = source;
 
+    if (this.onChunkStart) {
+      this.onChunkStart(chunkIndex, durationMs, recvTime);
+    }
+
     source.onended = () => {
       this.isPlaying = false;
       this.currentSource = null;
+      
+      if (this.onChunkEnd) {
+        this.onChunkEnd(chunkIndex);
+      }
+
       if (this.queue.length === 0) {
         this.onSpeakingStateChange(false);
         this.onPlaybackComplete();
@@ -123,6 +150,13 @@ export default function TestVoicePage() {
   const [utteranceEndFired, setUtteranceEndFired] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
 
+  // TTS playback verification states
+  const [totalChunksReceived, setTotalChunksReceived] = useState<number>(0);
+  const [totalChunksPlayed, setTotalChunksPlayed] = useState<number>(0);
+  const [currentPlayingChunkIndex, setCurrentPlayingChunkIndex] = useState<number | null>(null);
+  const [totalChunksExpected, setTotalChunksExpected] = useState<number | null>(null);
+  const [playbackLifecycleLogs, setPlaybackLifecycleLogs] = useState<string[]>([]);
+
   // Refs for tracking active WebRTC connection
   const wsRef = useRef<WebSocket | null>(null);
   const deviceRef = useRef<mediasoupClient.Device | null>(null);
@@ -139,6 +173,7 @@ export default function TestVoicePage() {
 
   const clientBufferToPlaybackMsRef = useRef<number | null>(null);
   const firstAudioChunkRecvTimeRef = useRef<number | null>(null);
+  const rttIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Instantiate the Audio Queue Player on mount
   useEffect(() => {
@@ -170,6 +205,41 @@ export default function TestVoicePage() {
         clientBufferToPlaybackMsRef.current = diff;
         addLog(`[Client Latency] Time from first audio chunk received to start of playback: ${diff}ms`);
       }
+    };
+
+    player.onChunkStart = (chunkIndex, durationMs, recvTime) => {
+      setCurrentPlayingChunkIndex(chunkIndex);
+      const delay = Date.now() - recvTime;
+      const logMsg = `Chunk ${chunkIndex} started playing. Duration: ${durationMs}ms. Recv-to-play delay: ${delay}ms.`;
+      console.log(`[TTS Playback] ${logMsg}`);
+      setPlaybackLifecycleLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${logMsg}`]);
+    };
+
+    player.onChunkEnd = (chunkIndex) => {
+      setTotalChunksPlayed((prev) => prev + 1);
+      setCurrentPlayingChunkIndex(null);
+      const logMsg = `Chunk ${chunkIndex} finished playing successfully.`;
+      console.log(`[TTS Playback] ${logMsg}`);
+      setPlaybackLifecycleLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${logMsg}`]);
+      
+      // Acknowledge back to backend
+      wsRef.current?.send(JSON.stringify({
+        type: "chunk_played",
+        chunkIndex
+      }));
+    };
+
+    player.onPlaybackError = (chunkIndex, errorMsg) => {
+      const logMsg = `ERROR playing Chunk ${chunkIndex}: ${errorMsg}`;
+      console.error(`[TTS Playback] ${logMsg}`);
+      setPlaybackLifecycleLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${logMsg}`]);
+      
+      // Report playback error to backend
+      wsRef.current?.send(JSON.stringify({
+        type: "playback_error",
+        chunkIndex,
+        error: errorMsg
+      }));
     };
 
     audioPlayerRef.current = player;
@@ -408,6 +478,40 @@ export default function TestVoicePage() {
                     addLog(`Media production established on server. Producer ID: ${msg.id}`);
                     callback({ id: msg.id });
                     setStatus("connected");
+                    
+                    // Periodically query WebRTC stats for round trip time
+                    if (rttIntervalRef.current) {
+                      clearInterval(rttIntervalRef.current);
+                    }
+                    rttIntervalRef.current = setInterval(async () => {
+                      const sendTr = sendTransportRef.current;
+                      if (!sendTr || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+                      try {
+                        // @ts-ignore
+                        const pc: RTCPeerConnection = (sendTr as any)._handler?._pc;
+                        if (pc) {
+                          const stats = await pc.getStats();
+                          let rtt: number | null = null;
+                          stats.forEach((report) => {
+                            if (report.type === "candidate-pair" && typeof report.currentRoundTripTime === "number") {
+                              if (report.nominated || report.state === "succeeded" || rtt === null) {
+                                rtt = Math.round(report.currentRoundTripTime * 1000);
+                              }
+                            }
+                          });
+                          if (rtt !== null) {
+                            console.log(`[WebRTC Stats] Measured RTT: ${rtt}ms`);
+                            wsRef.current.send(JSON.stringify({
+                              type: "webrtc_rtt",
+                              rttMs: rtt
+                            }));
+                          }
+                        }
+                      } catch (err) {
+                        console.error("Failed to read ICE getStats:", err);
+                      }
+                    }, 3000);
+
                     ws.removeEventListener("message", onProduced);
                   } else if (msg.type === "error") {
                     addLog(`Server media production failed: ${msg.message}`);
@@ -534,18 +638,33 @@ export default function TestVoicePage() {
             }
 
             case "audio_chunk": {
-              const { audio } = data;
+              const { audio, chunkIndex } = data;
+              if (chunkIndex === 1) {
+                setTotalChunksReceived(1);
+                setTotalChunksPlayed(0);
+                setCurrentPlayingChunkIndex(null);
+                setTotalChunksExpected(null);
+                setPlaybackLifecycleLogs([]);
+              } else {
+                setTotalChunksReceived((prev) => prev + 1);
+              }
+              const logMsg = `Received Chunk ${chunkIndex} from server. Size: ${audio.length} base64 chars.`;
+              console.log(`[TTS Playback] ${logMsg}`);
+              setPlaybackLifecycleLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${logMsg}`]);
+
               if (!firstAudioChunkRecvTimeRef.current) {
                 firstAudioChunkRecvTimeRef.current = Date.now();
               }
               if (audioPlayerRef.current) {
-                audioPlayerRef.current.playChunk(audio);
+                audioPlayerRef.current.playChunk(audio, chunkIndex);
               }
               break;
             }
 
             case "tts_done": {
-              addLog("Received tts_done from server. Audio stream fully received.");
+              const { totalChunks } = data;
+              addLog(`Received tts_done from server. Total expected chunks: ${totalChunks}.`);
+              setTotalChunksExpected(totalChunks);
               audioStreamFinishedRef.current = true;
               // If the queue is already empty (not playing), signal playback_complete immediately
               if (audioPlayerRef.current && !audioPlayerRef.current.isPlaying) {
@@ -605,6 +724,11 @@ export default function TestVoicePage() {
     if (audioPlayerRef.current) {
       addLog("Stopping and clearing assistant audio player...");
       audioPlayerRef.current.stop();
+    }
+
+    if (rttIntervalRef.current) {
+      clearInterval(rttIntervalRef.current);
+      rttIntervalRef.current = null;
     }
 
     // Close mediasoup components
@@ -846,7 +970,7 @@ export default function TestVoicePage() {
                   animation: "pulse-orange 1s infinite"
                 }}
               ></div>
-              <span>🔊 Assistant Speaking</span>
+              <span>🔊 Assistant Speaking {currentPlayingChunkIndex !== null && `(Chunk ${currentPlayingChunkIndex} of ${totalChunksExpected !== null ? totalChunksExpected : "..."})`}</span>
             </div>
           )}
         </div>
@@ -956,6 +1080,54 @@ export default function TestVoicePage() {
           }}
         >
           {logs.length === 0 ? "Console is empty." : logs.map((log, i) => <div key={i}>{log}</div>)}
+        </div>
+      </div>
+
+      {/* TTS Delivery & Playback Verification */}
+      <div className="card">
+        <h2>4. TTS Playback Verification</h2>
+        <p style={{ color: "var(--text-muted)", fontSize: "14px", marginTop: "4px" }}>
+          Confirms that each TTS audio chunk is successfully delivered, decoded, and played back by the browser.
+        </p>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "16px", marginTop: "16px" }}>
+          <div style={{ border: "1px solid var(--border-color)", borderRadius: "8px", padding: "12px", backgroundColor: "#0d0f12" }}>
+            <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>Chunks Received</div>
+            <div style={{ fontSize: "24px", fontWeight: "bold", color: "#58a6ff", marginTop: "4px" }}>{totalChunksReceived}</div>
+          </div>
+          <div style={{ border: "1px solid var(--border-color)", borderRadius: "8px", padding: "12px", backgroundColor: "#0d0f12" }}>
+            <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>Chunks Successfully Played</div>
+            <div style={{ fontSize: "24px", fontWeight: "bold", color: totalChunksPlayed === totalChunksReceived && totalChunksReceived > 0 ? "#56d364" : "#ffffff", marginTop: "4px" }}>{totalChunksPlayed}</div>
+          </div>
+          <div style={{ border: "1px solid var(--border-color)", borderRadius: "8px", padding: "12px", backgroundColor: "#0d0f12" }}>
+            <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>Current Playback State</div>
+            <div style={{ fontSize: "16px", fontWeight: "bold", color: currentPlayingChunkIndex !== null ? "#ffb454" : "var(--text-muted)", marginTop: "8px" }}>
+              {currentPlayingChunkIndex !== null ? `Playing chunk ${currentPlayingChunkIndex} of ${totalChunksExpected !== null ? totalChunksExpected : "..."}` : "Idle"}
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: "16px" }}>
+          <h4 style={{ margin: "0 0 8px 0", color: "#ffffff", fontSize: "13px" }}>Playback Lifecycle Events</h4>
+          <div
+            style={{
+              backgroundColor: "#0d0f12",
+              border: "1px solid var(--border-color)",
+              borderRadius: "6px",
+              height: "120px",
+              overflowY: "auto",
+              padding: "10px",
+              fontFamily: "monospace",
+              fontSize: "12px",
+              color: "#58a6ff"
+            }}
+          >
+            {playbackLifecycleLogs.length === 0 ? (
+              <div style={{ color: "var(--text-muted)", fontStyle: "italic" }}>No lifecycle events yet.</div>
+            ) : (
+              playbackLifecycleLogs.map((log, i) => <div key={i}>{log}</div>)
+            )}
+          </div>
         </div>
       </div>
     </div>
