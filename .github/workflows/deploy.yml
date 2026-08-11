@@ -1,0 +1,82 @@
+name: Production CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: production-deployment
+  cancel-in-progress: false
+
+jobs:
+  # ============================================================================
+  # Stage 1: Validation & Quality Gates
+  # ============================================================================
+  validate:
+    name: Lint & Build Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Validate Backend TypeScript & Prisma
+        run: |
+          cd backend
+          npm ci
+          npx prisma generate
+          npm run build
+
+      - name: Validate Frontend Build
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+  # ============================================================================
+  # Stage 2: Production Deployment (Runs only on main push after validation)
+  # ============================================================================
+  deploy:
+    name: Deploy to Google Cloud VM
+    needs: validate
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger Remote Deployment via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.GCE_HOST }}
+          username: ${{ secrets.GCE_SSH_USER }}
+          key: ${{ secrets.GCE_SSH_KEY }}
+          port: ${{ secrets.GCE_SSH_PORT || 22 }}
+          script_stop: true
+          envs: PROJECT_PATH
+          script: |
+            TARGET_DIR="${{ secrets.PROJECT_PATH || '/opt/voice-orchestration-platform' }}"
+            cd "${TARGET_DIR}"
+
+            echo "Ensuring deployment scripts are executable..."
+            chmod +x scripts/*.sh
+
+            echo "Executing production deploy..."
+            if ! ./scripts/deploy.sh; then
+              echo "Deployment failed! Initiating emergency rollback..."
+              ./scripts/rollback.sh
+              exit 1
+            fi
+
+            echo "Running post-deployment health validation..."
+            ./scripts/health.sh

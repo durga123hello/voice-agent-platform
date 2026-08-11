@@ -2,12 +2,12 @@ import crypto from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 
-// We fetch the secret from env.
-const SECRET = process.env.ENCRYPTION_SECRET;
+// We fetch the secret from env (support both ENCRYPTION_SECRET and ENCRYPTION_KEY).
+const SECRET = process.env.ENCRYPTION_SECRET || process.env.ENCRYPTION_KEY;
 
 // Ensure the secret is present and is sufficiently long.
 if (!SECRET) {
-  throw new Error('CRITICAL: ENCRYPTION_SECRET environment variable is not defined.');
+  throw new Error('CRITICAL: ENCRYPTION_SECRET (or ENCRYPTION_KEY) environment variable is not defined.');
 }
 
 // Derive a 32-byte key from the secret using SHA-256

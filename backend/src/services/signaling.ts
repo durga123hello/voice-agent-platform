@@ -493,9 +493,11 @@ export function handleSignaling(ws: WebSocket, sessionId: string) {
 
         case 'createWebRtcTransport': {
           console.log(`[Signaling] Requesting server-side WebRtcTransport creation...`);
+          const listenIp = process.env.MEDIASOUP_LISTEN_IP || '127.0.0.1';
+          const announcedIp = process.env.MEDIASOUP_ANNOUNCED_IP || '127.0.0.1';
           const transport = await router.createWebRtcTransport({
             listenIps: [
-              { ip: '127.0.0.1', announcedIp: '127.0.0.1' }
+              { ip: listenIp, announcedIp: announcedIp }
             ],
             enableUdp: true,
             enableTcp: true,
