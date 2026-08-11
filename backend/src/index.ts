@@ -116,18 +116,28 @@ async function startServer() {
   // 3b. Connect to Redis
   try {
     const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
-    console.log(`Connecting to Redis at: ${redisUrl}`);
-    // Create a temporary client with 0 retries and a short timeout to check connection
-    const tempRedis = new Redis(redisUrl, {
-      connectTimeout: 2000,
-      maxRetriesPerRequest: 0
-    });
-    await tempRedis.ping();
-    tempRedis.disconnect();
-    console.log('Successfully connected to Redis.');
+    if (redisUrl === 'memory') {
+      console.log('Using in-memory Redis store for session state.');
+    } else {
+      console.log(`Connecting to Redis at: ${redisUrl}`);
+      // Create a temporary client with 0 retries and a short timeout to check connection
+      const tempRedis = new Redis(redisUrl, {
+        connectTimeout: 1500,
+        maxRetriesPerRequest: 0,
+        retryStrategy: () => null
+      });
+      tempRedis.on('error', () => {}); // silence temp error
+      await tempRedis.ping();
+      tempRedis.disconnect();
+      console.log('Successfully connected to Redis.');
+    }
   } catch (error) {
-    console.error('CRITICAL: Failed to connect to Redis on startup check. Exiting...', error);
-    process.exit(1);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('ℹ️ [Redis] No local Redis server found. Using built-in In-Memory store for local development.');
+    } else {
+      console.error('CRITICAL: Failed to connect to Redis on startup check. Exiting...', error);
+      process.exit(1);
+    }
   }
 
   // 4. Seed default user

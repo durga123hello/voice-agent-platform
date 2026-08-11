@@ -1,45 +1,14 @@
+
 import { Router } from 'express';
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import prisma from '../db/client';
 import { sessionAuth } from '../middleware/sessionAuth';
 import { emailRateLimiter } from '../utils/rateLimiter';
+import { sendOtpEmail } from '../utils/mailer';
 
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'jwt-secret-key-123';
-
-async function sendOtpEmail(email: string, code: string) {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey || !apiKey.startsWith('re_')) {
-    console.log(`\n==================================================`);
-    console.log(`[OTP Verification Code]: ${code} for ${email}`);
-    console.log(`==================================================\n`);
-    return;
-  }
-
-  try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        from: 'Voice Platform <onboarding@resend.dev>',
-        to: email,
-        subject: 'Verify your email - Voice Platform OTP',
-        html: `<p>Your verification code is <strong>${code}</strong>. It expires in 10 minutes.</p>`
-      })
-    });
-    if (!res.ok) {
-      console.error('[Resend Error] Failed to send email:', await res.text());
-    } else {
-      console.log(`[Resend] Successfully sent OTP email to ${email}`);
-    }
-  } catch (err) {
-    console.error('[Resend Fetch Error]', err);
-  }
-}
 
 // 1. Passwordless Signup endpoint (with rate limiter)
 router.post('/signup', emailRateLimiter, async (req, res, next) => {
@@ -92,8 +61,8 @@ router.post('/signup', emailRateLimiter, async (req, res, next) => {
       }
     });
 
-    // Send email
-    await sendOtpEmail(trimmedEmail, code);
+    // Send email via SMTP (or fallback)
+    await sendOtpEmail({ to: trimmedEmail, code, purpose: 'signup' });
 
     const responsePayload: any = {
       message: 'Signup successful. Please verify your email using the OTP sent.',
@@ -205,8 +174,8 @@ router.post('/request-login-otp', emailRateLimiter, async (req, res, next) => {
         }
       });
 
-      // Send email
-      await sendOtpEmail(trimmedEmail, code);
+      // Send email via SMTP (or fallback)
+      await sendOtpEmail({ to: trimmedEmail, code, purpose: 'login' });
 
       if (process.env.NODE_ENV !== 'production' || !process.env.RESEND_API_KEY) {
         responsePayload.debugCode = code;
