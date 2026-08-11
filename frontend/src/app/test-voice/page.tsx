@@ -3,9 +3,10 @@
 import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import * as mediasoupClient from "mediasoup-client";
+import { getApiUrl, getWsUrl } from "@/utils/api";
 
-const BACKEND_URL = "http://localhost:3000";
-const WS_BACKEND_URL = "ws://localhost:3000";
+const BACKEND_URL = getApiUrl();
+const WS_BACKEND_URL = getWsUrl();
 
 interface AgentConfig {
   id: string;

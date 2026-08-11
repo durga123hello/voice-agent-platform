@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { getApiUrl } from "@/utils/api";
 
 interface ApiKeyData {
   id: string;
@@ -45,7 +46,7 @@ export default function ApiKeysPage() {
     setError("");
     try {
       // 1. Fetch profile info
-      const meRes = await fetch("http://localhost:3000/api/auth/me", {
+      const meRes = await fetch(`${getApiUrl()}/api/auth/me`, {
         headers: { Authorization: `Bearer ${jwtToken}` }
       });
       if (!meRes.ok) {
@@ -62,7 +63,7 @@ export default function ApiKeysPage() {
       setTenantId(meData.tenant.id);
 
       // 2. Fetch API keys
-      const keysRes = await fetch("http://localhost:3000/api/api-keys", {
+      const keysRes = await fetch(`${getApiUrl()}/api/api-keys`, {
         headers: { Authorization: `Bearer ${jwtToken}` }
       });
       if (!keysRes.ok) {
@@ -85,7 +86,7 @@ export default function ApiKeysPage() {
     setNewRawKey(null);
 
     try {
-      const res = await fetch("http://localhost:3000/api/api-keys", {
+      const res = await fetch(`${getApiUrl()}/api/api-keys`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -117,7 +118,7 @@ export default function ApiKeysPage() {
     setError("");
 
     try {
-      const res = await fetch("http://localhost:3000/api/api-keys/revoke", {
+      const res = await fetch(`${getApiUrl()}/api/api-keys/revoke`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

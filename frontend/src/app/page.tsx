@@ -2,8 +2,9 @@
 
 import React, { useState } from "react";
 import Link from "next/link";
+import { getApiUrl } from "@/utils/api";
 
-const BACKEND_URL = "http://localhost:3000";
+const BACKEND_URL = getApiUrl();
 
 interface Skill {
   name: string;
