@@ -39,6 +39,7 @@ interface OverviewData {
     llm: LatencyStat;
     tts: LatencyStat;
     firstToken: LatencyStat;
+    webrtcRtt?: LatencyStat;
     subComponents?: {
       micToMediasoup: SubComponentStat;
       mediasoupToFfmpeg: SubComponentStat;
@@ -53,6 +54,7 @@ interface OverviewData {
       networkToDeepgramTts: SubComponentStat;
       audioRelayToClient: SubComponentStat;
       clientBufferToPlayback: SubComponentStat;
+      ttsToSpeakerNetworkTransit?: SubComponentStat;
     };
   };
   reliability: {
@@ -60,6 +62,7 @@ interface OverviewData {
     openaiErrorCount: number;
     deepgramSttErrorCount: number;
     deepgramTtsErrorCount: number;
+    playbackErrorCount?: number;
     avgAbortedTurn: number;
     avgAbortedElapsedTimeSeconds: number;
     avgBargeInRate: number;
@@ -94,6 +97,7 @@ interface SessionData {
   avgDeepgramNetworkRttMs: number;
   avgDeepgramProcessingMs: number;
   avgInterimTranscriptCount: number;
+  avgWebrtcRttMs?: number;
   totalTokensUsed: number;
   turnsCount: number;
   interruptionsCount: number;
@@ -431,6 +435,7 @@ export default function AnalyticsPage() {
                         <div>OpenAI API Errors: <strong>{data.overview.reliability.openaiErrorCount}</strong></div>
                         <div>Deepgram STT Errors: <strong>{data.overview.reliability.deepgramSttErrorCount}</strong></div>
                         <div>Deepgram TTS Errors: <strong>{data.overview.reliability.deepgramTtsErrorCount}</strong></div>
+                        <div>TTS Playback Errors: <strong style={{ color: (data.overview.reliability.playbackErrorCount || 0) > 0 ? "#f85149" : "inherit" }}>{data.overview.reliability.playbackErrorCount || 0}</strong></div>
                       </div>
                     </div>
 
@@ -554,8 +559,33 @@ export default function AnalyticsPage() {
                             {renderSubStat(data.overview.latencies.subComponents.networkToDeepgramTts, "Network to Deepgram TTS")}
                             {renderSubStat(data.overview.latencies.subComponents.audioRelayToClient, "Audio Relay to Client")}
                             {renderSubStat(data.overview.latencies.subComponents.clientBufferToPlayback, "Client Buffer to Playback")}
+                            {renderSubStat(data.overview.latencies.subComponents.ttsToSpeakerNetworkTransit, "TTS to Speaker Network (est.)")}
                           </div>
                         )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Network Transit (WebRTC RTT) */}
+                <div className="card" style={{ margin: 0 }}>
+                  <h2>Network Transit</h2>
+                  <p style={{ color: "var(--text-muted)", fontSize: "14px", marginTop: "4px" }}>
+                    Metrics measuring pure network conditions between the client browser and the server.
+                  </p>
+                  
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "16px", marginTop: "16px" }}>
+                    <div style={{ border: "1px solid var(--border-color)", borderRadius: "8px", padding: "16px", backgroundColor: "#0d0f12" }}>
+                      <h4 style={{ margin: 0, color: "#ffffff" }}>WebRTC Connection RTT</h4>
+                      <p style={{ color: "var(--text-muted)", fontSize: "12px", margin: "4px 0 12px 0" }}>
+                        Round-trip network time estimated by the browser's WebRTC candidate pair stats.
+                      </p>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "14px", marginBottom: "8px" }}>
+                        <div>Average: <strong style={{ color: "#58a6ff" }}>{data.overview.latencies.webrtcRtt?.avgMs || 0}ms</strong></div>
+                        <div>p95: <strong style={{ color: "#ffb454" }}>{data.overview.latencies.webrtcRtt?.p95Ms || 0}ms</strong></div>
+                      </div>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "12px", fontStyle: "italic", borderTop: "1px dashed var(--border-color)", paddingTop: "8px" }}>
+                        * Note: This represents total round-trip transit time, not exact one-way mic-to-server latency.
                       </div>
                     </div>
                   </div>
@@ -792,11 +822,11 @@ export default function AnalyticsPage() {
                                 {s.turnsCount > 0 && (
                                   <details style={{ marginTop: "16px", padding: "12px", border: "1px solid var(--border-color)", borderRadius: "6px", backgroundColor: "#0d1117" }}>
                                     <summary style={{ cursor: "pointer", color: "#58a6ff", fontSize: "13px", fontWeight: "600", outline: "none", userSelect: "none" }}>
-                                      Pipeline Latency Breakdown (5 Key Parts)
+                                      Pipeline Latency Breakdown (6 Key Parts)
                                     </summary>
                                     <div style={{
                                       display: "grid",
-                                      gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                                      gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
                                       gap: "12px",
                                       marginTop: "12px",
                                       fontSize: "13px",
@@ -837,6 +867,15 @@ export default function AnalyticsPage() {
                                         <div style={{ fontWeight: "600", color: "#ffffff", marginBottom: "2px" }}>5. TTS Network & Synthesis</div>
                                         <div>avgTtsNetworkAndSynthesisMs: <strong>{s.avgTtsNetworkAndSynthesisMs}ms</strong></div>
                                         <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "2px" }}>Aura model synthesis turnaround</div>
+                                      </div>
+                                      <div>
+                                        <div style={{ fontWeight: "600", color: "#ffffff", marginBottom: "2px" }}>6. WebRTC Network Transit</div>
+                                        <div>avgWebrtcRttMs: <strong>{s.avgWebrtcRttMs || 0}ms</strong></div>
+                                        <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "2px" }}>Round-trip connection latency</div>
+                                        <div style={{ marginTop: "6px", paddingLeft: "8px", borderLeft: "2px solid #30363d", display: "flex", flexDirection: "column", gap: "2px", fontSize: "11px" }}>
+                                          <div>Mic &rarr; STT Transit (est.): <strong style={{ color: "#58a6ff" }}>{s.avgWebrtcRttMs ? `${Math.round(s.avgWebrtcRttMs / 2)}ms` : "—"}</strong></div>
+                                          <div>TTS &rarr; Speaker Transit (est.): <strong style={{ color: "#ffb454" }}>{s.avgWebrtcRttMs ? `${Math.round(s.avgWebrtcRttMs / 2)}ms` : "—"}</strong></div>
+                                        </div>
                                       </div>
                                     </div>
                                   </details>

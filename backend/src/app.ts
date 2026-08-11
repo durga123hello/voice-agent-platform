@@ -5,6 +5,9 @@ import agentConfigsRouter from './routes/agentConfigs';
 import credentialsRouter from './routes/credentials';
 import sessionsRouter from './routes/sessions';
 import analyticsRouter from './routes/analytics';
+import apiKeysRouter from './routes/apiKeys';
+import authRouter from './routes/auth';
+import assistantsRouter from './routes/assistants';
 
 import { rateLimiter } from './utils/rateLimiter';
 
@@ -21,6 +24,9 @@ app.use('/api/agent-configs', agentConfigsRouter);
 app.use('/api/credentials', credentialsRouter);
 app.use('/api/sessions', sessionsRouter);
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/auth', authRouter);
+app.use('/api/v1/assistants', assistantsRouter);
+app.use('/api', apiKeysRouter);
 
 // Global Error Handler
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {

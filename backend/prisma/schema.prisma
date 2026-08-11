@@ -8,15 +8,49 @@ generator client {
 }
 
 model Tenant {
-  id           String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name         String
-  createdAt    DateTime?     @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt    DateTime?     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
-  users        User[]
-  agentConfigs AgentConfig[]
-  sessions     Session[]
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name          String
+  contactEmail  String?       @unique @map("contact_email")
+  passwordHash  String?       @map("password_hash")
+  emailVerified Boolean       @default(false) @map("email_verified")
+  createdAt     DateTime?     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime?     @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+  users         User[]
+  agentConfigs  AgentConfig[]
+  sessions      Session[]
+  apiKeys       ApiKey[]
+  otpCodes      OtpCode[]
 
   @@map("tenants")
+}
+
+model OtpCode {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId  String?  @map("tenant_id") @db.Uuid
+  email     String
+  codeHash  String   @map("code_hash")
+  purpose   String   // 'signup' | 'login'
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+  used      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  tenant    Tenant?  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("otp_codes")
+}
+
+model ApiKey {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId   String    @map("tenant_id") @db.Uuid
+  keyHash    String    @map("key_hash")
+  keyPrefix  String    @map("key_prefix")
+  name       String?
+  keyType    String    @default("private") @map("key_type") // 'private' | 'public'
+  isActive   Boolean   @default(true) @map("is_active")
+  createdAt  DateTime? @default(now()) @map("created_at") @db.Timestamptz
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz
+  tenant     Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("api_keys")
 }
 
 model Provider {
@@ -80,6 +114,12 @@ model AgentConfigVersion {
   interviewDurationMinutes Int?        @map("interview_duration_minutes")
   uploadedQuestions        Json?       @map("uploaded_questions")
   behaviorSettings         Json?       @map("behavior_settings")
+  firstMessage             String?     @map("first_message")
+  transcriberConfig        Json?       @map("transcriber_config")
+  recordingEnabled         Boolean     @default(false) @map("recording_enabled")
+  silenceTimeoutSeconds    Int?        @map("silence_timeout_seconds")
+  analysisPlan             Json?       @map("analysis_plan")
+  customContext            Json?       @map("custom_context")
   createdAt                DateTime?   @default(now()) @map("created_at") @db.Timestamptz
   agentConfig              AgentConfig @relation(fields: [agentConfigId], references: [id], onDelete: Cascade)
   sessions                 Session[]

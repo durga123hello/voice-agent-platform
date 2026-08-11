@@ -271,18 +271,6 @@ export default function SetupPage() {
     <div className="container">
       <h1>Voice AI Agent Platform — Setup</h1>
       
-      <div style={{ marginBottom: "20px", display: "flex", gap: "12px" }}>
-        <Link href="/test-voice" className="btn btn-secondary">
-          Go to Voice Testing Page &rarr;
-        </Link>
-        <Link href="/sessions" className="btn btn-secondary">
-          View Session History &rarr;
-        </Link>
-        <Link href="/analytics" className="btn btn-primary">
-          View Analytics Dashboard &rarr;
-        </Link>
-      </div>
-
       {/* API Credentials Setup */}
       <div className="card">
         <h2>1. API Credentials</h2>

@@ -579,6 +579,34 @@ export function handleSignaling(ws: WebSocket, sessionId: string) {
           break;
         }
 
+        case 'webrtc_rtt': {
+          const { rttMs } = data;
+          const pipeline = sessionPipelines.get(sessionId);
+          if (pipeline) {
+            (pipeline as any).webrtcRttMs = rttMs;
+          }
+          break;
+        }
+
+        case 'chunk_played': {
+          const { chunkIndex } = data;
+          console.log(`[Signaling] Chunk ${chunkIndex} played successfully on client for session ${sessionId}`);
+          break;
+        }
+
+        case 'playback_error': {
+          const { chunkIndex, error } = data;
+          console.error(`[Signaling] Playback error on client for session ${sessionId}, chunk ${chunkIndex}: ${error}`);
+          prisma.sessionEvent.create({
+            data: {
+              sessionId,
+              eventType: 'playback_error',
+              metadata: { chunkIndex, error, timestamp: new Date().toISOString() }
+            }
+          }).catch(dbErr => console.error('[Database Log Error] Failed to log playback error event:', dbErr));
+          break;
+        }
+
         case 'interrupt': {
           console.log(`[Signaling] Interruption request received for session ${sessionId}`);
           cancelActiveTurn(sessionId);
@@ -618,6 +646,7 @@ export function handleSignaling(ws: WebSocket, sessionId: string) {
             const deepgram_network_rtt_ms = (pipeline as any)?.deepgram_network_rtt_ms || 0;
             const deepgram_processing_ms = (pipeline as any)?.deepgram_processing_ms || 0;
             const interim_transcript_count = (pipeline as any)?.interim_transcript_count || 0;
+            const webrtc_rtt_ms = (pipeline as any)?.webrtcRttMs || null;
 
             // Calculate average TTS chunk duration
             const ttsChunkDurations = (latencies as any).ttsChunkDurations || [];
@@ -693,7 +722,8 @@ export function handleSignaling(ws: WebSocket, sessionId: string) {
                   local_pipeline_ms,
                   deepgram_network_rtt_ms,
                   deepgram_processing_ms,
-                  interim_transcript_count
+                  interim_transcript_count,
+                  webrtc_rtt_ms
                 }
               }
             }).catch(err => console.error('[Database Log Error] Failed to log turn latency event:', err));
@@ -803,7 +833,8 @@ a=rtcp-mux
     console.log(`[Pipeline] Successfully decrypted Deepgram API Key (starts with: ${apiKey.substring(0, 4)}...).`);
 
     // 7. Establish Deepgram live transcription WebSocket connection
-    const deepgramUrl = 'wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&utterance_end_ms=1000&endpointing=300&vad_events=true';
+    const deepgramHost = process.env.DEEPGRAM_MOCK_URL || 'wss://api.deepgram.com';
+    const deepgramUrl = `${deepgramHost}/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&utterance_end_ms=1000&endpointing=300&vad_events=true`;
     console.log(`[Deepgram Connection] Connecting to WebSocket URL: ${deepgramUrl}`);
     deepgramWs = new WebSocket(deepgramUrl, {
       headers: {
@@ -956,53 +987,65 @@ a=rtcp-mux
             // Calculate granular STT latency breakdown
             const sttNetworkAndComputeMs = Math.max(0, sttDuration - 1300);
 
-            // 1. Find sentStopVal (closest streamTime in chunksLog)
-            let sentStopVal = deepgramOpenTime + lastWordEndTimeInStream * 1000; // fallback
-            if (pipeline.chunksLog && pipeline.chunksLog.length > 0 && lastWordEndTimeInStream > 0) {
-              let minDiff = Infinity;
-              for (const chunk of pipeline.chunksLog) {
-                const diff = Math.abs(chunk.streamTime - lastWordEndTimeInStream);
-                if (diff < minDiff) {
-                  minDiff = diff;
-                  sentStopVal = chunk.sentTime;
+            let local_pipeline_ms = 0;
+            let deepgram_network_rtt_ms = 0;
+            let deepgram_processing_ms = 0;
+
+            if (lastWordEndTimeInStream > 0) {
+              // 1. Find sentStopVal (closest streamTime in chunksLog)
+              let sentStopVal = deepgramOpenTime + lastWordEndTimeInStream * 1000; // fallback
+              if (pipeline.chunksLog && pipeline.chunksLog.length > 0) {
+                let minDiff = Infinity;
+                for (const chunk of pipeline.chunksLog) {
+                  const diff = Math.abs(chunk.streamTime - lastWordEndTimeInStream);
+                  if (diff < minDiff) {
+                    minDiff = diff;
+                    sentStopVal = chunk.sentTime;
+                  }
                 }
               }
-            }
 
-            // 2. Find firstResponseTime (first responseEndTime >= lastWordEndTimeInStream)
-            let firstResponseTime = Date.now(); // fallback
-            if (pipeline.responsesLog && pipeline.responsesLog.length > 0 && lastWordEndTimeInStream > 0) {
-              for (const resp of pipeline.responsesLog) {
-                if (resp.responseEndTime >= lastWordEndTimeInStream) {
-                  firstResponseTime = resp.recvTime;
-                  break;
+              // 2. Find firstResponseTime (first responseEndTime >= lastWordEndTimeInStream)
+              let firstResponseTime = Date.now(); // fallback
+              if (pipeline.responsesLog && pipeline.responsesLog.length > 0) {
+                for (const resp of pipeline.responsesLog) {
+                  if (resp.responseEndTime >= lastWordEndTimeInStream) {
+                    firstResponseTime = resp.recvTime;
+                    break;
+                  }
                 }
               }
-            }
 
-            // Clamp firstResponseTime to sentStopVal if needed
-            if (firstResponseTime < sentStopVal) {
-              firstResponseTime = sentStopVal;
-            }
+              // Clamp firstResponseTime to sentStopVal if needed
+              if (firstResponseTime < sentStopVal) {
+                firstResponseTime = sentStopVal;
+              }
 
-            const clientStopTime = deepgramOpenTime + lastWordEndTimeInStream * 1000;
-            const local_pipeline_ms = Math.max(0, sentStopVal - clientStopTime);
-            const deepgram_network_rtt_ms = Math.max(0, firstResponseTime - sentStopVal);
-            const deepgram_processing_ms = Math.max(0, sttNetworkAndComputeMs - local_pipeline_ms - deepgram_network_rtt_ms);
+              const clientStopTime = deepgramOpenTime + lastWordEndTimeInStream * 1000;
+              local_pipeline_ms = Math.max(0, sentStopVal - clientStopTime);
+              deepgram_network_rtt_ms = Math.max(0, firstResponseTime - sentStopVal);
+
+              // Safety clamps: sub-components cannot exceed sttNetworkAndComputeMs
+              local_pipeline_ms = Math.min(local_pipeline_ms, sttNetworkAndComputeMs);
+              deepgram_network_rtt_ms = Math.min(deepgram_network_rtt_ms, sttNetworkAndComputeMs - local_pipeline_ms);
+              deepgram_processing_ms = Math.max(0, sttNetworkAndComputeMs - local_pipeline_ms - deepgram_network_rtt_ms);
+
+              console.log(`[STT Granular Metrics] lastWordEndTimeInStream=${lastWordEndTimeInStream}s, clientStopTime=${clientStopTime}, sentStopVal=${sentStopVal}, firstResponseTime=${firstResponseTime}`);
+            }
 
             (pipeline as any).local_pipeline_ms = local_pipeline_ms;
             (pipeline as any).deepgram_network_rtt_ms = deepgram_network_rtt_ms;
             (pipeline as any).deepgram_processing_ms = deepgram_processing_ms;
             (pipeline as any).interim_transcript_count = pipeline.interimTranscriptCount || 0;
 
-            console.log(`[STT Granular Metrics] lastWordEndTimeInStream=${lastWordEndTimeInStream}s, clientStopTime=${clientStopTime}, sentStopVal=${sentStopVal}, firstResponseTime=${firstResponseTime}`);
             console.log(`[STT Granular Metrics] local_pipeline_ms=${local_pipeline_ms}ms, deepgram_network_rtt_ms=${deepgram_network_rtt_ms}ms, deepgram_processing_ms=${deepgram_processing_ms}ms, interim_transcript_count=${pipeline.interimTranscriptCount}`);
 
-            // Clear logs for the next turn
-            pipeline.chunksLog = [];
-            pipeline.responsesLog = [];
-            pipeline.totalBytesSent = 0;
+            // Prune logs to control memory growth instead of clearing them,
+            // and preserve totalBytesSent to maintain timeline synchronization.
+            pipeline.chunksLog = (pipeline.chunksLog || []).slice(-500);
+            pipeline.responsesLog = (pipeline.responsesLog || []).slice(-500);
             pipeline.interimTranscriptCount = 0;
+            lastWordEndTimeInStream = 0; // Reset stale stream clock for the next turn
           }
           console.log(`[STT Latency] Calculated stt_duration_ms: ${sttDuration}ms`);
           
@@ -1178,6 +1221,7 @@ class TtsQueueWorker {
   private active = false;
   private cancelled = false;
   private streamFinished = false;
+  private chunkCount = 0;
 
   constructor(
     private sessionId: string,
@@ -1210,7 +1254,10 @@ class TtsQueueWorker {
         console.log(`[TTS Worker] Queue empty and stream finished. Cleaning up worker. Sending tts_done to client.`);
         activeSessions.delete(this.sessionId);
         if (this.clientWs.readyState === WebSocket.OPEN) {
-          this.clientWs.send(JSON.stringify({ type: 'tts_done' }));
+          this.clientWs.send(JSON.stringify({ 
+            type: 'tts_done',
+            totalChunks: this.chunkCount
+          }));
         }
       }
       return;
@@ -1237,11 +1284,13 @@ class TtsQueueWorker {
       }
 
       if (!this.cancelled) {
-        console.log(`[TTS Worker] Audio chunk generated (${audioBuffer.length} bytes). Sending to client.`);
+        this.chunkCount++;
+        console.log(`[TTS Worker] Audio chunk generated (${audioBuffer.length} bytes). Sending chunk ${this.chunkCount} to client.`);
         const relayStart = Date.now();
         this.clientWs.send(JSON.stringify({
           type: 'audio_chunk',
-          audio: audioBuffer.toString('base64')
+          audio: audioBuffer.toString('base64'),
+          chunkIndex: this.chunkCount
         }));
         const relayMs = Date.now() - relayStart;
 
