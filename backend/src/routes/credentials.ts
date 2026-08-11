@@ -69,7 +69,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     });
 
     // Add a masked string/flag to confirm setup to the client without leaking actual values
-    const result = credentials.map(cred => ({
+    const result = credentials.map((cred: any) => ({
       id: cred.id,
       provider: cred.provider,
       isConfigured: true,

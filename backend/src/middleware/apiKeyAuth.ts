@@ -64,7 +64,7 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
     prisma.apiKey.update({
       where: { id: apiKeyRow.id },
       data: { lastUsedAt: new Date() }
-    }).catch(err => console.error('[API Key Auth] Failed to update lastUsedAt:', err));
+    }).catch((err: any) => console.error('[API Key Auth] Failed to update lastUsedAt:', err));
 
     // Attach tenantId to request context
     (req as any).tenantId = apiKeyRow.tenantId;
@@ -141,7 +141,7 @@ export async function apiKeyAuthOptional(req: Request, res: Response, next: Next
     prisma.apiKey.update({
       where: { id: apiKeyRow.id },
       data: { lastUsedAt: new Date() }
-    }).catch(err => console.error('[API Key Auth] Failed to update lastUsedAt:', err));
+    }).catch((err: any) => console.error('[API Key Auth] Failed to update lastUsedAt:', err));
 
     // Attach tenantId to request context
     (req as any).tenantId = apiKeyRow.tenantId;

@@ -29,7 +29,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       }
     });
 
-    const formatted = sessions.map((s) => ({
+    const formatted = sessions.map((s: any) => ({
       id: s.id,
       startedAt: s.startedAt,
       endedAt: s.endedAt,
@@ -119,11 +119,11 @@ router.get('/:id/transcript', async (req: Request, res: Response, next: NextFunc
       orderBy: { createdAt: 'asc' }
     });
 
-    const turnLatencies = events.filter(e => e.eventType === 'turn_latency');
-    const tokenUsages = events.filter(e => e.eventType === 'token_usage');
+    const turnLatencies = events.filter((e: any) => e.eventType === 'turn_latency');
+    const tokenUsages = events.filter((e: any) => e.eventType === 'token_usage');
 
     let assistantIndex = 0;
-    const enrichedMessages = messages.map((m) => {
+    const enrichedMessages = messages.map((m: any) => {
       if (m.role === 'assistant') {
         const latency = turnLatencies[assistantIndex]?.metadata || null;
         const usage = tokenUsages[assistantIndex]?.metadata || null;
@@ -180,7 +180,7 @@ router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => 
             elapsedTimeMs: elapsed
           }
         }
-      }).catch(dbErr => console.error('[Database Log Error] Failed to log abort event:', dbErr));
+      }).catch((dbErr: any) => console.error('[Database Log Error] Failed to log abort event:', dbErr));
       console.log(`[PATCH Session Aborted] Logged abort event for session ${id} at turn ${turnCount} after ${elapsed}ms.`);
     }
 

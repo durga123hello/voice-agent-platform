@@ -89,7 +89,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const tenantId = getTenantId(req);
     const userId = await getUserIdForTenant(tenantId);
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx: any) => {
       // Create parent agent config
       const parent = await tx.agentConfig.create({
         data: {
@@ -256,7 +256,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       return;
     }
 
-    const result = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx: any) => {
       // Update parent config metadata/name and updatedAt timestamp
       const parent = await tx.agentConfig.update({
         where: { id },

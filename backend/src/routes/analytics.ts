@@ -40,7 +40,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
 
     // 2. Extract available configs list for dropdown
     const uniqueConfigsMap = new Map<string, string>();
-    sessions.forEach(s => {
+    sessions.forEach((s: any) => {
       const cfg = s.agentConfigVersion?.agentConfig;
       if (cfg) {
         uniqueConfigsMap.set(cfg.id, cfg.name || 'Unnamed Agent');
@@ -50,11 +50,11 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
 
     // 3. Filter sessions list for the table
     const tableSessions = configId
-      ? sessions.filter(s => s.agentConfigVersion?.agentConfig?.id === configId)
+      ? sessions.filter((s: any) => s.agentConfigVersion?.agentConfig?.id === configId)
       : sessions;
 
     // 4. Filter sessions list for aggregates calculation
-    const aggregateSessions = tableSessions.filter(s => {
+    const aggregateSessions = tableSessions.filter((s: any) => {
       if (excludeActiveZeroTurns) {
         // Exclude active sessions that have 0 assistant turns
         if (s.status === 'active' && s.messages.length === 0) {
@@ -129,7 +129,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
     let abortedNudgesSum = 0;
     let abortedSessionsForNudges = 0;
 
-    aggregateSessions.forEach((s) => {
+    aggregateSessions.forEach((s: any) => {
       // Status breakdown
       if (s.status === 'completed') completedCount++;
       else if (s.status === 'aborted') abortedCount++;
@@ -148,7 +148,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
       let sessionInterruptions = 0;
       let sessionSilenceNudges = 0;
 
-      s.sessionEvents.forEach((evt) => {
+      s.sessionEvents.forEach((evt: any) => {
         if (evt.eventType === 'interruption') {
           totalInterruptions++;
           sessionInterruptions++;
@@ -255,7 +255,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
     });
 
     // Format all sessions for table display (based on tableSessions filter)
-    const formattedSessions = tableSessions.map((s) => {
+    const formattedSessions = tableSessions.map((s: any) => {
       let sessionInterruptions = 0;
       let sessionSilenceNudges = 0;
       let sessionReconnects = 0;
@@ -283,7 +283,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
       const sessionInterimTranscriptCounts: number[] = [];
       const sessionWebrtcRttLatencies: number[] = [];
 
-      s.sessionEvents.forEach((evt) => {
+      s.sessionEvents.forEach((evt: any) => {
         if (evt.eventType === 'interruption') {
           sessionInterruptions++;
         } else if (evt.eventType === 'silence_prompt') {

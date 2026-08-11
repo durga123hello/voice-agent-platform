@@ -141,8 +141,8 @@ export async function getSessionHistory(sessionId: string): Promise<any[]> {
     orderBy: { createdAt: 'asc' }
   });
   const history = dbMessages
-    .filter(m => m.role === 'user' || m.role === 'assistant')
-    .map(m => ({
+    .filter((m: any) => m.role === 'user' || m.role === 'assistant')
+    .map((m: any) => ({
       role: m.role as 'user' | 'assistant',
       content: m.content
     }));
@@ -434,7 +434,7 @@ export function handleSignaling(ws: WebSocket, sessionId: string) {
         eventType: 'reconnect',
         metadata: { timestamp: new Date().toISOString() }
       }
-    }).catch(err => console.error('[Database Log Error] Failed to log reconnect event:', err));
+    }).catch((err: any) => console.error('[Database Log Error] Failed to log reconnect event:', err));
   }
 
   // Initialize pipeline synchronously first, so we don't yield the event loop before listeners are bound!
@@ -603,7 +603,7 @@ export function handleSignaling(ws: WebSocket, sessionId: string) {
               eventType: 'playback_error',
               metadata: { chunkIndex, error, timestamp: new Date().toISOString() }
             }
-          }).catch(dbErr => console.error('[Database Log Error] Failed to log playback error event:', dbErr));
+          }).catch((dbErr: any) => console.error('[Database Log Error] Failed to log playback error event:', dbErr));
           break;
         }
 
@@ -620,7 +620,7 @@ export function handleSignaling(ws: WebSocket, sessionId: string) {
               eventType: 'interruption',
               metadata: { timestamp: new Date().toISOString() }
             }
-          }).catch(err => console.error('[Database Log Error] Failed to log interruption event:', err));
+          }).catch((err: any) => console.error('[Database Log Error] Failed to log interruption event:', err));
 
           // Clean up latency tracker on interruption
           activeTurnLatencies.delete(sessionId);
@@ -726,7 +726,7 @@ export function handleSignaling(ws: WebSocket, sessionId: string) {
                   webrtc_rtt_ms
                 }
               }
-            }).catch(err => console.error('[Database Log Error] Failed to log turn latency event:', err));
+            }).catch((err: any) => console.error('[Database Log Error] Failed to log turn latency event:', err));
 
             activeTurnLatencies.delete(sessionId);
           }
@@ -1107,7 +1107,7 @@ a=rtcp-mux
             message: err?.message || 'Deepgram STT connection error'
           }
         }
-      }).catch(dbErr => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
+      }).catch((dbErr: any) => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
     });
 
     deepgramWs.on('close', (code, reason) => {
@@ -1123,7 +1123,7 @@ a=rtcp-mux
               message: `Deepgram connection closed abnormally. Code: ${code}, Reason: ${reason || 'Unknown reason'}`
             }
           }
-        }).catch(dbErr => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
+        }).catch((dbErr: any) => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
       }
       endSessionPipeline(sessionId);
     });
@@ -1191,7 +1191,7 @@ async function getDeepgramTts(sessionId: string, text: string, voice: string, ap
             message: msg
           }
         }
-      }).catch(dbErr => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
+      }).catch((dbErr: any) => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
       
       throw new Error(msg);
     }
@@ -1210,7 +1210,7 @@ async function getDeepgramTts(sessionId: string, text: string, voice: string, ap
             message: error?.message || 'Network/connection error'
           }
         }
-      }).catch(dbErr => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
+      }).catch((dbErr: any) => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
     }
     throw error;
   }
@@ -1465,7 +1465,7 @@ async function triggerLlmTurn(sessionId: string, clientWs: WebSocket, isSilenceN
             message: msg
           }
         }
-      }).catch(dbErr => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
+      }).catch((dbErr: any) => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
 
       throw new Error(msg);
     }
@@ -1517,7 +1517,7 @@ async function triggerLlmTurn(sessionId: string, clientWs: WebSocket, isSilenceN
                     totalTokens: total_tokens
                   }
                 }
-              }).catch(err => console.error('[Database Log Error] Failed to log token usage event:', err));
+              }).catch((err: any) => console.error('[Database Log Error] Failed to log token usage event:', err));
             }
 
             const content = parsed.choices?.[0]?.delta?.content || '';
@@ -1616,7 +1616,7 @@ async function triggerLlmTurn(sessionId: string, clientWs: WebSocket, isSilenceN
               message: error?.message || 'Network/connection error'
             }
           }
-        }).catch(dbErr => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
+        }).catch((dbErr: any) => console.error('[Database Log Error] Failed to log provider error event:', dbErr));
       }
     }
   } finally {

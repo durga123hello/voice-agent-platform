@@ -156,7 +156,7 @@ router.get('/api-keys', async (req: Request, res: Response, next: NextFunction) 
       orderBy: { createdAt: 'desc' }
     });
 
-    const sanitizedKeys = keys.map(k => ({
+    const sanitizedKeys = keys.map((k: any) => ({
       id: k.id,
       tenantId: k.tenantId,
       keyPrefix: k.keyPrefix,
