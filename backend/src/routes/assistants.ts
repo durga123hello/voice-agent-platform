@@ -1,14 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import prisma from '../db/client';
-import { apiKeyAuth } from '../middleware/apiKeyAuth';
+import { DEFAULT_TENANT_ID, DEFAULT_USER_ID } from '../index';
+import { apiKeyAuthOptional } from '../middleware/apiKeyAuth';
+import { resolveUtteranceEndMs } from '../utils/promptPacing';
 
 const router = Router();
 
-// Endpoint gate: requires API Key Auth
-router.use(apiKeyAuth);
-
-const DEFAULT_TENANT_ID = '00000000-0000-0000-0000-000000000001';
-const DEFAULT_USER_ID = '00000000-0000-0000-0000-000000000000';
+router.use(apiKeyAuthOptional);
 
 async function getUserIdForTenant(tenantId: string): Promise<string> {
   if (tenantId === DEFAULT_TENANT_ID) return DEFAULT_USER_ID;
@@ -25,8 +23,8 @@ async function getUserIdForTenant(tenantId: string): Promise<string> {
 }
 
 /**
- * POST /api/v1/assistants
- * Single-call assistant creation endpoint.
+ * Compatibility POST /api/assistants route
+ * Adheres to standard specification: creates an AgentConfig and AgentConfigVersion
  */
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -43,6 +41,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       recordingEnabled,
       maxDurationSeconds,
       silenceTimeoutSeconds,
+      utteranceEndMs,
       context
     } = req.body;
 
@@ -55,6 +54,10 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const systemPrompt = model.messages[0].content;
     const llmModel = model.model || 'gpt-4o-mini';
     const voicePreference = voice ? voice.voiceId : null;
+    const resolvedPacing = resolveUtteranceEndMs(
+      utteranceEndMs || transcriber?.utteranceEndMs,
+      systemPrompt
+    );
 
     // Create AgentConfig row
     const config = await prisma.agentConfig.create({
@@ -77,6 +80,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
         transcriberConfig: transcriber || null,
         recordingEnabled: !!recordingEnabled,
         silenceTimeoutSeconds: silenceTimeoutSeconds ? parseInt(silenceTimeoutSeconds, 10) : null,
+        utteranceEndMs: resolvedPacing,
         analysisPlan: analysisPlan || null,
         customContext: context || null
       }
@@ -92,6 +96,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       transcriberConfig: version.transcriberConfig,
       recordingEnabled: version.recordingEnabled,
       silenceTimeoutSeconds: version.silenceTimeoutSeconds,
+      utteranceEndMs: version.utteranceEndMs,
       analysisPlan: version.analysisPlan,
       customContext: version.customContext
     });

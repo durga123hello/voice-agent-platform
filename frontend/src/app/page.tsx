@@ -21,6 +21,7 @@ export default function SetupPage() {
   const [name, setName] = useState("");
   const [llmModel, setLlmModel] = useState("gpt-4o-mini");
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [utteranceEndMs, setUtteranceEndMs] = useState<number>(1800);
   
   // Collapsible Context Panel State
   const [isContextExpanded, setIsContextExpanded] = useState(false);
@@ -67,6 +68,7 @@ export default function SetupPage() {
       setCandidateResume("");
       setInterviewDuration("");
       setVoicePreference("aura-asteria-en");
+      setUtteranceEndMs(1800);
       setSkills([{ name: "", weightage: 0 }]);
       setQuestions([""]);
       setIsContextExpanded(false);
@@ -84,6 +86,7 @@ export default function SetupPage() {
       setCandidateResume(config.candidateResume || "");
       setInterviewDuration(config.interviewDurationMinutes ? String(config.interviewDurationMinutes) : "");
       setVoicePreference(config.voicePreference || "aura-asteria-en");
+      setUtteranceEndMs(config.utteranceEndMs || 1800);
 
       if (config.interviewPreferences && Array.isArray(config.interviewPreferences)) {
         setSkills(config.interviewPreferences);
@@ -227,6 +230,7 @@ export default function SetupPage() {
       interviewPreferences: filteredSkills.length > 0 ? filteredSkills : null,
       interviewDurationMinutes: duration,
       uploadedQuestions: filteredQuestions.length > 0 ? filteredQuestions : null,
+      utteranceEndMs,
     };
 
     const isEdit = !!selectedConfigId;
@@ -243,8 +247,14 @@ export default function SetupPage() {
       });
 
       if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData?.error || `Failed to ${isEdit ? "update" : "create"} configuration.`);
+        const errData = await res.json().catch(() => ({}));
+        const errMsg =
+          typeof errData?.error === "object" && errData?.error?.message
+            ? errData.error.message
+            : typeof errData?.error === "string"
+            ? errData.error
+            : `Failed to ${isEdit ? "update" : "create"} configuration (Status: ${res.status}).`;
+        throw new Error(errMsg);
       }
 
       const config = await res.json();
@@ -382,6 +392,30 @@ export default function SetupPage() {
               rows={6}
               required
             />
+          </div>
+
+          <div className="form-group" style={{ marginTop: "20px" }}>
+            <label htmlFor="pacing-select">
+              Conversational Pacing & User Pause Threshold
+            </label>
+            <p style={{ color: "var(--text-muted)", fontSize: "13px", marginTop: "2px", marginBottom: "8px" }}>
+              Controls how long the agent waits in silence before considering your thought complete and responding.
+            </p>
+            <select
+              id="pacing-select"
+              value={utteranceEndMs}
+              onChange={(e) => setUtteranceEndMs(Number(e.target.value))}
+            >
+              <option value={1000}>⚡ Fast &amp; Snappy (1.0s) — Rapid Q&amp;A, minimal pause tolerance</option>
+              <option value={1500}>💬 Dynamic (1.5s) — Light conversational pauses</option>
+              <option value={1800}>🗣️ Natural Conversation (1.8s) [Recommended] — Balanced breathing room</option>
+              <option value={2200}>🤔 Thoughtful (2.2s) — Comfortable pauses for thinking</option>
+              <option value={2500}>🧠 Interview Mode (2.5s) — Extended pauses for complex explanations</option>
+              <option value={3000}>⏳ Relaxed / Slow (3.0s) — Generous silence window</option>
+            </select>
+            <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "6px" }}>
+              💡 <em>Tip: You can also specify pause duration directly in your System Prompt (e.g. &quot;Allow 2.5s pause to think&quot;).</em>
+            </div>
           </div>
 
           {/* Collapsible Optional Block */}

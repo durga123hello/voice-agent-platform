@@ -24,6 +24,7 @@ interface SessionPipeline {
   mediasoupTransports: Set<string>;
   mediasoupProducers: Set<string>;
   ended: boolean;
+  deepgramKeepAliveInterval?: NodeJS.Timeout;
   totalBytesSent?: number;
   chunksLog?: { streamTime: number; sentTime: number }[];
   responsesLog?: { responseEndTime: number; recvTime: number }[];
@@ -223,6 +224,10 @@ export async function endSessionPipeline(sessionId: string, closingWs?: WebSocke
   // 1. Clear timers, cancel LLM/TTS active turn, and clear Redis ephemeral keys
   clearSilenceTimer(sessionId);
   cancelActiveTurn(sessionId);
+  if (pipeline.deepgramKeepAliveInterval) {
+    clearInterval(pipeline.deepgramKeepAliveInterval);
+    pipeline.deepgramKeepAliveInterval = undefined;
+  }
   await clearAllRedisSessionKeys(sessionId);
 
   // 2. Fetch the session and log auto-abort if currently active
@@ -832,10 +837,19 @@ a=rtcp-mux
     const apiKey = decrypt(credential.encryptedKey);
     console.log(`[Pipeline] Successfully decrypted Deepgram API Key (starts with: ${apiKey.substring(0, 4)}...).`);
 
-    // 7. Establish Deepgram live transcription WebSocket connection
+    // 7. Retrieve session agent configuration for dynamic speech pause threshold
+    const dbSession = await prisma.session.findUnique({
+      where: { id: sessionId },
+      include: { agentConfigVersion: true }
+    });
+
+    const utteranceEndMs = dbSession?.agentConfigVersion?.utteranceEndMs || 1800;
+    const endpointingMs = Math.min(500, Math.max(300, Math.round(utteranceEndMs * 0.2)));
+
+    // 8. Establish Deepgram live transcription WebSocket connection
     const deepgramHost = process.env.DEEPGRAM_MOCK_URL || 'wss://api.deepgram.com';
-    const deepgramUrl = `${deepgramHost}/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&utterance_end_ms=1000&endpointing=300&vad_events=true`;
-    console.log(`[Deepgram Connection] Connecting to WebSocket URL: ${deepgramUrl}`);
+    const deepgramUrl = `${deepgramHost}/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&utterance_end_ms=${utteranceEndMs}&endpointing=${endpointingMs}&vad_events=true`;
+    console.log(`[Deepgram Connection] Connecting with utterance_end_ms=${utteranceEndMs}ms, endpointing=${endpointingMs}ms to URL: ${deepgramUrl}`);
     deepgramWs = new WebSocket(deepgramUrl, {
       headers: {
         Authorization: `Token ${apiKey}`
@@ -851,6 +865,16 @@ a=rtcp-mux
       if (pl) {
         pl.deepgramWs = deepgramWs;
         (pl as any).deepgramOpenTime = Date.now();
+        if (pl.deepgramKeepAliveInterval) {
+          clearInterval(pl.deepgramKeepAliveInterval);
+        }
+        pl.deepgramKeepAliveInterval = setInterval(() => {
+          if (deepgramWs && deepgramWs.readyState === WebSocket.OPEN) {
+            try {
+              deepgramWs.send(JSON.stringify({ type: 'KeepAlive' }));
+            } catch (e) {}
+          }
+        }, 4000);
       }
 
       // Verify that ffmpeg exists (fails loudly check)
@@ -1112,6 +1136,11 @@ a=rtcp-mux
 
     deepgramWs.on('close', (code, reason) => {
       console.log(`[Deepgram Connection Closed] Code: ${code}, Reason: ${reason}`);
+      const pl = sessionPipelines.get(sessionId);
+      if (pl?.deepgramKeepAliveInterval) {
+        clearInterval(pl.deepgramKeepAliveInterval);
+        pl.deepgramKeepAliveInterval = undefined;
+      }
       if (code !== 1000 && code !== 1005) {
         prisma.sessionEvent.create({
           data: {

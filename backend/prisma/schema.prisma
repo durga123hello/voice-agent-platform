@@ -118,6 +118,7 @@ model AgentConfigVersion {
   transcriberConfig        Json?       @map("transcriber_config")
   recordingEnabled         Boolean     @default(false) @map("recording_enabled")
   silenceTimeoutSeconds    Int?        @map("silence_timeout_seconds")
+  utteranceEndMs           Int?        @default(1800) @map("utterance_end_ms")
   analysisPlan             Json?       @map("analysis_plan")
   customContext            Json?       @map("custom_context")
   createdAt                DateTime?   @default(now()) @map("created_at") @db.Timestamptz

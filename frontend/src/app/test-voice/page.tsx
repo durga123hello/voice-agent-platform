@@ -14,6 +14,7 @@ interface AgentConfig {
   systemPrompt: string;
   llmModel: string;
   voicePreference: string;
+  utteranceEndMs?: number;
 }
 
 interface ChatMessage {
@@ -144,6 +145,11 @@ export default function TestVoicePage() {
   const [selectedConfigId, setSelectedConfigId] = useState("");
   const [status, setStatus] = useState<"disconnected" | "connecting" | "connected" | "reconnecting" | "ended">("disconnected");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // API Key validation & warning dialog state
+  const [showKeyWarningModal, setShowKeyWarningModal] = useState(false);
+  const [missingKeys, setMissingKeys] = useState<string[]>([]);
+  const [verifyingKeys, setVerifyingKeys] = useState(false);
   
   // Real-time transcript/conversation state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -282,10 +288,54 @@ export default function TestVoicePage() {
     setLogs((prev) => [...prev, timestamped]);
   };
 
+  const checkApiKeys = async (): Promise<{ ok: boolean; missing: string[] }> => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/credentials`);
+      if (!res.ok) {
+        throw new Error("Failed to check credentials");
+      }
+      const data: Array<{ provider: string; isConfigured: boolean }> = await res.json();
+      const hasDeepgram = data.some((c) => c.provider === "deepgram" && c.isConfigured);
+      const hasOpenai = data.some((c) => c.provider === "openai" && c.isConfigured);
+
+      const missing: string[] = [];
+      if (!hasDeepgram) missing.push("Deepgram API Key");
+      if (!hasOpenai) missing.push("OpenAI API Key");
+
+      return {
+        ok: missing.length === 0,
+        missing
+      };
+    } catch (err) {
+      console.error("Error verifying credentials:", err);
+      return {
+        ok: false,
+        missing: ["Deepgram API Key", "OpenAI API Key"]
+      };
+    }
+  };
+
   const handleConnect = async () => {
-    isManualDisconnectRef.current = false;
-    reconnectCountRef.current = 0;
-    await connectSession(null);
+    setErrorMessage(null);
+    setVerifyingKeys(true);
+
+    try {
+      const { ok, missing } = await checkApiKeys();
+      setVerifyingKeys(false);
+
+      if (!ok) {
+        setMissingKeys(missing);
+        setShowKeyWarningModal(true);
+        return;
+      }
+
+      isManualDisconnectRef.current = false;
+      reconnectCountRef.current = 0;
+      await connectSession(null);
+    } catch (err: any) {
+      setVerifyingKeys(false);
+      setErrorMessage(err.message || "Failed to verify API credentials");
+    }
   };
 
   const connectSession = async (existingSessionId: string | null) => {
@@ -684,6 +734,19 @@ export default function TestVoicePage() {
               break;
             }
 
+            case "webRtcTransportConnected":
+            case "produced":
+              // Handled by direct promise listeners
+              break;
+
+            case "sessionEnded": {
+              addLog("Session was ended by the server.");
+              isManualDisconnectRef.current = true;
+              handleDisconnect(false);
+              setStatus("disconnected");
+              break;
+            }
+
             case "error": {
               throw new Error(data.message);
             }
@@ -865,12 +928,43 @@ export default function TestVoicePage() {
               ))
             )}
           </select>
+          {selectedConfigId && (
+            <div style={{ marginTop: "10px", display: "flex", alignItems: "center", gap: "8px", fontSize: "13px" }}>
+              <span style={{ color: "var(--text-muted)" }}>Conversational Pacing:</span>
+              {(() => {
+                const selected = configs.find((c) => c.id === selectedConfigId);
+                const pauseMs = selected?.utteranceEndMs || 1800;
+                return (
+                  <span
+                    style={{
+                      backgroundColor: "rgba(56, 139, 253, 0.15)",
+                      border: "1px solid rgba(56, 139, 253, 0.4)",
+                      color: "#58a6ff",
+                      padding: "2px 8px",
+                      borderRadius: "4px",
+                      fontWeight: 600
+                    }}
+                  >
+                    ⏱️ {(pauseMs / 1000).toFixed(1)}s Pause Threshold
+                    {pauseMs <= 1200
+                      ? " (⚡ Fast & Snappy)"
+                      : pauseMs <= 2000
+                      ? " (🗣️ Natural)"
+                      : " (🧠 Interview / Thoughtful)"}
+                  </span>
+                );
+              })()}
+            </div>
+          )}
         </div>
-
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
           {status === "disconnected" ? (
-            <button className="btn btn-success" onClick={handleConnect} disabled={configs.length === 0}>
-              Connect Microphone
+            <button
+              className="btn btn-success"
+              onClick={handleConnect}
+              disabled={configs.length === 0 || verifyingKeys}
+            >
+              {verifyingKeys ? "Checking API Keys..." : "Connect Microphone"}
             </button>
           ) : status === "ended" ? (
             <button className="btn btn-secondary" onClick={() => setStatus("disconnected")}>
@@ -937,134 +1031,84 @@ export default function TestVoicePage() {
                 : "Disconnected"}
             </span>
           </div>
-
-          {utteranceEndFired && (
-            <div
-              className="voice-status"
-              style={{
-                backgroundColor: "rgba(88, 166, 255, 0.2)",
-                color: "#58a6ff",
-                border: "1px solid rgba(88, 166, 255, 0.4)"
-              }}
-            >
-              ⚡ UtteranceEnd Fired
-            </div>
-          )}
-
-          {isSpeaking && (
-            <div
-              className="voice-status"
-              style={{
-                backgroundColor: "rgba(255, 165, 0, 0.2)",
-                color: "orange",
-                border: "1px solid rgba(255, 165, 0, 0.4)",
-                display: "flex",
-                alignItems: "center",
-                gap: "6px"
-              }}
-            >
-              <div
-                className="pulse-indicator"
-                style={{
-                  backgroundColor: "orange",
-                  boxShadow: "0 0 0 0 rgba(255, 165, 0, 0.7)",
-                  animation: "pulse-orange 1s infinite"
-                }}
-              ></div>
-              <span>🔊 Assistant Speaking {currentPlayingChunkIndex !== null && `(Chunk ${currentPlayingChunkIndex} of ${totalChunksExpected !== null ? totalChunksExpected : "..."})`}</span>
-            </div>
-          )}
         </div>
       </div>
 
-      {/* Real-time transcript display */}
       <div className="card">
-        <h2>2. Live Conversation Output</h2>
-        <div
-          ref={transcriptAreaRef}
-          className="transcript-area"
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "12px",
-            height: "350px",
-            overflowY: "auto",
-            padding: "16px",
-            backgroundColor: "#0d0f12",
-            border: "1px solid var(--border-color)",
-            borderRadius: "6px"
-          }}
-        >
-          {messages.length === 0 && (
-            <div style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
-              Conversation will appear here... Speak into your microphone to start.
+        <h2>2. Live Conversation Stream</h2>
+        <div className="transcript-area" ref={transcriptAreaRef}>
+          {messages.length === 0 ? (
+            <div style={{ color: "var(--text-muted)", fontStyle: "italic", textAlign: "center", marginTop: "100px" }}>
+              Click "Connect Microphone" above and begin speaking to test the conversational loop.
             </div>
-          )}
-          
-          {messages.map((m) => {
-            const isUser = m.role === "user";
-            const isInProgress = m.id === "user-in-progress" || m.isStreaming;
-            
-            return (
+          ) : (
+            messages.map((msg) => (
               <div
-                key={m.id}
+                key={msg.id}
                 style={{
-                  alignSelf: isUser ? "flex-end" : "flex-start",
-                  backgroundColor: isInProgress
-                    ? "rgba(255, 255, 255, 0.05)"
-                    : isUser
-                    ? "rgba(35, 134, 54, 0.15)"
-                    : "rgba(88, 166, 255, 0.1)",
-                  border: `1px solid ${
-                    isInProgress
-                      ? "var(--border-color)"
-                      : isUser
-                      ? "rgba(35, 134, 54, 0.4)"
-                      : "rgba(88, 166, 255, 0.3)"
-                  }`,
-                  borderRadius: "8px",
-                  padding: "10px 14px",
-                  maxWidth: "80%",
-                  wordBreak: "break-word",
-                  fontStyle: isInProgress ? "italic" : "normal",
-                  opacity: isInProgress ? 0.75 : 1
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: msg.role === "user" ? "flex-end" : "flex-start",
+                  marginBottom: "16px"
                 }}
               >
                 <div
                   style={{
-                    fontSize: "11px",
-                    fontWeight: "bold",
-                    color: isInProgress
-                      ? "var(--text-muted)"
-                      : isUser
-                      ? "#56d364"
-                      : "#58a6ff",
+                    fontSize: "12px",
+                    fontWeight: 600,
+                    color: msg.role === "user" ? "#58a6ff" : "#56d364",
                     marginBottom: "4px"
                   }}
                 >
-                  {isUser ? (isInProgress ? "User (speaking)" : "User") : "Assistant"}
+                  {msg.role === "user" ? "You (User)" : "Agent (Assistant)"}
                 </div>
-                <div style={{ color: "#ffffff", fontSize: "15px" }}>
-                  {m.text}
-                  {isInProgress && (
-                    <span
-                      className="pulse-indicator"
-                      style={{
-                        display: "inline-block",
-                        marginLeft: "6px",
-                        width: "8px",
-                        height: "8px"
-                      }}
-                    ></span>
-                  )}
+                <div
+                  style={{
+                    backgroundColor: msg.role === "user" ? "#1f2937" : "#16202c",
+                    border: `1px solid ${msg.role === "user" ? "#374151" : "#233348"}`,
+                    padding: "10px 14px",
+                    borderRadius: "8px",
+                    maxWidth: "80%",
+                    color: msg.isStreaming ? "var(--text-muted)" : "#ffffff"
+                  }}
+                >
+                  {msg.text || (msg.isStreaming ? "Thinking..." : "")}
                 </div>
               </div>
-            );
-          })}
+            ))
+          )}
+        </div>
+
+        {/* Real-time speech status indicators */}
+        <div style={{ display: "flex", gap: "16px", marginTop: "12px", fontSize: "14px", color: "var(--text-muted)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <span
+              style={{
+                display: "inline-block",
+                width: "10px",
+                height: "10px",
+                borderRadius: "50%",
+                backgroundColor: utteranceEndFired ? "#e3b341" : "#30363d"
+              }}
+            ></span>
+            <span>UtteranceEnd Event</span>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <span
+              style={{
+                display: "inline-block",
+                width: "10px",
+                height: "10px",
+                borderRadius: "50%",
+                backgroundColor: isSpeaking ? "#56d364" : "#30363d"
+              }}
+            ></span>
+            <span>Assistant Speaking (TTS Audio)</span>
+          </div>
         </div>
       </div>
 
-      {/* Debug Logs */}
       <div className="card">
         <h2>3. Debug Console Logs</h2>
         <div
@@ -1131,6 +1175,51 @@ export default function TestVoicePage() {
           </div>
         </div>
       </div>
+
+      {/* Missing API Keys Warning Dialogue Box */}
+      {showKeyWarningModal && (
+        <div className="modal-overlay" onClick={() => setShowKeyWarningModal(false)}>
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <div className="modal-icon-warning">⚠️</div>
+              <h2 className="modal-title">Missing API Credentials</h2>
+            </div>
+            <div className="modal-body">
+              <p style={{ margin: "0 0 16px 0", color: "#e6edf3" }}>
+                Before connecting your microphone and starting a live voice session, the following required API keys must be configured:
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "16px" }}>
+                {missingKeys.map((keyName) => (
+                  <div key={keyName} className="missing-key-badge">
+                    <span>⚠️</span>
+                    <span><strong>{keyName}</strong> is not configured</span>
+                  </div>
+                ))}
+              </div>
+              <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: 0, lineHeight: 1.5 }}>
+                • <strong>Deepgram</strong> is required for real-time speech transcription & voice synthesis.<br />
+                • <strong>OpenAI</strong> is required for intelligent conversational agent responses.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowKeyWarningModal(false)}
+              >
+                Dismiss
+              </button>
+              <Link
+                href="/"
+                className="btn btn-primary"
+                onClick={() => setShowKeyWarningModal(false)}
+              >
+                Go to Setup Page &rarr;
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
