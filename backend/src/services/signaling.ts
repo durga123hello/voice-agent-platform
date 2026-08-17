@@ -35,12 +35,12 @@ interface SessionPipeline {
 
 export const sessionPipelines = new Map<string, SessionPipeline>();
 
-const activeSessions = new Map<string, {
+export const activeSessions = new Map<string, {
   abortController: AbortController | null;
-  ttsWorker: TtsQueueWorker | null;
+  ttsWorker: any | null; // Use any to allow both WebRTC and Telephony workers
 }>();
 
-const activeTurnLatencies = new Map<string, {
+export const activeTurnLatencies = new Map<string, {
   turnStartTime: number;
   firstTokenTime?: number;
   firstAudioTime?: number;
@@ -1137,7 +1137,7 @@ a=rtcp-mux
 
 
 
-function cancelActiveTurn(sessionId: string) {
+export function cancelActiveTurn(sessionId: string) {
   const context = activeSessions.get(sessionId);
   if (context) {
     console.log(`[Cancel Turn] Cancelling active LLM/TTS turn for session: ${sessionId}`);

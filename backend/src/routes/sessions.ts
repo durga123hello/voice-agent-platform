@@ -94,6 +94,92 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   }
 });
 
+// Create outbound Plivo call: POST /api/sessions/outbound
+router.post('/outbound', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { agentConfigId, phoneNumber } = req.body;
+
+    if (!agentConfigId || typeof agentConfigId !== 'string') {
+      res.status(400).json({ error: 'agentConfigId is required.' });
+      return;
+    }
+    if (!phoneNumber || typeof phoneNumber !== 'string') {
+      res.status(400).json({ error: 'phoneNumber is required.' });
+      return;
+    }
+
+    // Verify agent config exists and find latest version
+    const latestVersion = await prisma.agentConfigVersion.findFirst({
+      where: {
+        agentConfigId,
+        agentConfig: {
+          tenantId: getTenantId(req)
+        }
+      },
+      orderBy: { version: 'desc' }
+    });
+
+    if (!latestVersion) {
+      res.status(404).json({ error: 'Agent config or its version not found.' });
+      return;
+    }
+
+    // Create session in database
+    const session = await prisma.session.create({
+      data: {
+        tenantId: getTenantId(req),
+        agentConfigVersionId: latestVersion.id,
+        status: 'active'
+      }
+    });
+
+    // Get Plivo configuration
+    const authId = process.env.PLIVO_AUTH_ID;
+    const authToken = process.env.PLIVO_AUTH_TOKEN;
+    const fromNumber = process.env.PLIVO_FROM_NUMBER;
+    const answerUrlBase = process.env.PLIVO_ANSWER_URL_BASE;
+
+    if (!authId || !authToken || !fromNumber || !answerUrlBase) {
+      res.status(500).json({ error: 'Plivo is not fully configured in the server environment.' });
+      return;
+    }
+
+    // Trigger Outbound Call via Plivo API
+    const answerUrl = `${answerUrlBase}/api/telephony/plivo/answer/${session.id}`;
+    const plivoUrl = `https://api.plivo.com/v1/Account/${authId}/Call/`;
+    const authString = Buffer.from(`${authId}:${authToken}`).toString('base64');
+
+    const plivoRes = await fetch(plivoUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${authString}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        from: fromNumber,
+        to: phoneNumber,
+        answer_url: answerUrl,
+        answer_method: 'POST'
+      })
+    });
+
+    const responseText = await plivoRes.text();
+    if (!plivoRes.ok) {
+      throw new Error(`Plivo API trigger failed: ${responseText}`);
+    }
+
+    res.status(201).json({
+      id: session.id,
+      status: session.status,
+      startedAt: session.startedAt,
+      plivoResponse: JSON.parse(responseText)
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
 // Fetch transcripts for completed sessions: GET /api/sessions/:id/transcript
 router.get('/:id/transcript', async (req: Request, res: Response, next: NextFunction) => {
   try {

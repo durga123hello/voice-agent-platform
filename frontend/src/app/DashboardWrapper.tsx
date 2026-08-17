@@ -114,7 +114,8 @@ export default function DashboardWrapper({ children }: { children: React.ReactNo
         {/* Center: Navigation Links */}
         <div style={{ display: "flex", gap: "4px" }}>
           <Link href="/" style={linkStyle("/")}>Setup Portal</Link>
-          <Link href="/test-voice" style={linkStyle("/test-voice")}>Interactive Testing</Link>
+          <Link href="/test-voice" style={linkStyle("/test-voice")}>WebRTC Test</Link>
+          <Link href="/test-telephony" style={linkStyle("/test-telephony")}>Telephony Test</Link>
           <Link href="/sessions" style={linkStyle("/sessions")}>Sessions</Link>
           <Link href="/analytics" style={linkStyle("/analytics")}>Analytics</Link>
           <Link href="/api-keys" style={linkStyle("/api-keys")}>API Keys</Link>

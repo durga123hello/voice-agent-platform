@@ -37,6 +37,11 @@ export default function SetupPage() {
   const [configMessage, setConfigMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const [createdConfigId, setCreatedConfigId] = useState<string | null>(null);
 
+  // Outbound Call States
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [callMessage, setCallMessage] = useState<{ text: string; isError: boolean; sessionId?: string } | null>(null);
+  const [isCalling, setIsCalling] = useState(false);
+
   // Dropdown list states for editing existing config
   const [configs, setConfigs] = useState<any[]>([]);
   const [selectedConfigId, setSelectedConfigId] = useState("");
@@ -265,6 +270,51 @@ export default function SetupPage() {
       await loadConfigs();
     } catch (err: any) {
       setConfigMessage({ text: err.message || "Failed to save configuration.", isError: true });
+    }
+  };
+
+  // Handle Trigger Call
+  const handleTriggerCall = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCallMessage(null);
+
+    if (!selectedConfigId) {
+      setCallMessage({ text: "Please select or create an Agent Configuration first.", isError: true });
+      return;
+    }
+
+    if (!phoneNumber.trim()) {
+      setCallMessage({ text: "Please enter a valid phone number.", isError: true });
+      return;
+    }
+
+    setIsCalling(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/outbound`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentConfigId: selectedConfigId,
+          phoneNumber: phoneNumber.trim()
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData?.error || "Failed to trigger outbound call.");
+      }
+
+      const session = await res.json();
+      setCallMessage({
+        text: `Outbound call triggered successfully! Dialing...`,
+        isError: false,
+        sessionId: session.id
+      });
+      setPhoneNumber("");
+    } catch (err: any) {
+      setCallMessage({ text: err.message || "Failed to trigger outbound call.", isError: true });
+    } finally {
+      setIsCalling(false);
     }
   };
 
@@ -509,6 +559,84 @@ export default function SetupPage() {
 
           <button type="submit" className="btn btn-primary" style={{ width: "100%", marginTop: "20px" }}>
             {selectedConfigId ? "Save New Version" : "Create Config"}
+          </button>
+        </form>
+      </div>
+
+      {/* Telephony Outbound Call */}
+      <div className="card" style={{ marginTop: "30px" }}>
+        <h2>3. Plivo Telephony Outbound Call</h2>
+        <p style={{ color: "var(--text-muted)", fontSize: "14px", marginBottom: "16px" }}>
+          Dial any mobile or landline number using the selected Agent Configuration.
+        </p>
+
+        {callMessage && (
+          <div className={`alert ${callMessage.isError ? "alert-error" : "alert-success"}`} style={{ padding: "12px", borderRadius: "6px", marginBottom: "16px" }}>
+            {callMessage.text}
+            {callMessage.sessionId && (
+              <div style={{ marginTop: "8px", fontSize: "13px" }}>
+                <Link 
+                  href={`/sessions/${callMessage.sessionId}`}
+                  style={{ color: "#00e6ff", textDecoration: "underline", fontWeight: "bold" }}
+                >
+                  View Active Call Transcript & Logs
+                </Link>
+              </div>
+            )}
+          </div>
+        )}
+
+        <form onSubmit={handleTriggerCall}>
+          <div className="form-group" style={{ marginBottom: "15px" }}>
+            <label style={{ fontWeight: "bold", display: "block", marginBottom: "6px" }}>Selected Agent Configuration</label>
+            <div style={{ padding: "10px", backgroundColor: "#0d0f12", border: "1px solid var(--border-color)", borderRadius: "6px", color: "#a0aec0", fontSize: "14px" }}>
+              {selectedConfigId 
+                ? (configs.find(c => c.id === selectedConfigId)?.name || "Unnamed Config")
+                : "No configuration selected. Please select one in Section 2 above."
+              }
+            </div>
+          </div>
+
+          <div className="form-group" style={{ marginBottom: "15px" }}>
+            <label htmlFor="target-phone" style={{ fontWeight: "bold", display: "block", marginBottom: "6px" }}>Recipient Phone Number (with Country Code)</label>
+            <input
+              id="target-phone"
+              type="text"
+              placeholder="e.g. +14155551234 or +919876543210"
+              value={phoneNumber}
+              onChange={(e) => setPhoneNumber(e.target.value)}
+              disabled={isCalling}
+              style={{
+                width: "100%",
+                padding: "10px",
+                borderRadius: "6px",
+                backgroundColor: "#0d0f12",
+                color: "#ffffff",
+                border: "1px solid var(--border-color)",
+                fontSize: "14px"
+              }}
+              required
+            />
+          </div>
+
+          <button 
+            type="submit" 
+            className="btn btn-primary" 
+            style={{ 
+              width: "100%", 
+              marginTop: "10px", 
+              backgroundColor: isCalling ? "#4c535d" : "#0052cc",
+              padding: "12px",
+              borderRadius: "6px",
+              color: "#ffffff",
+              border: "none",
+              cursor: isCalling || !selectedConfigId ? "not-allowed" : "pointer",
+              fontWeight: "bold",
+              fontSize: "15px"
+            }}
+            disabled={isCalling || !selectedConfigId}
+          >
+            {isCalling ? "Dialing..." : "Call Number"}
           </button>
         </form>
       </div>

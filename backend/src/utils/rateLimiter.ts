@@ -5,6 +5,11 @@ const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 const MAX_REQUESTS = 100; // 100 requests per 15 minutes
 
 export function rateLimiter(req: Request, res: Response, next: NextFunction) {
+  if (process.env.NODE_ENV !== 'production') {
+    next();
+    return;
+  }
+
   const ip = (req.ip || 
              req.headers['x-forwarded-for'] || 
              req.socket.remoteAddress || 

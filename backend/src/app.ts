@@ -28,6 +28,26 @@ app.use('/api/auth', authRouter);
 app.use('/api/v1/assistants', assistantsRouter);
 app.use('/api', apiKeysRouter);
 
+// XML Answer Endpoint for Plivo
+app.post('/api/telephony/plivo/answer/:sessionId', (req: Request, res: Response) => {
+  const { sessionId } = req.params;
+  console.log(`[Telephony Webhook] Answer URL requested for Session ID: ${sessionId}`);
+  console.log(`[Telephony Webhook] Headers:`, JSON.stringify(req.headers, null, 2));
+  console.log(`[Telephony Webhook] Body:`, JSON.stringify(req.body, null, 2));
+
+  const wsBase = process.env.PLIVO_ANSWER_URL_BASE || 'http://localhost:3000';
+  const wsUrl = `${wsBase.replace(/^http/, 'ws')}/ws/telephony/plivo/${sessionId}`;
+  console.log(`[Telephony Webhook] Returning WebSocket Stream URL: ${wsUrl}`);
+
+  res.set('Content-Type', 'text/xml');
+  res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Stream bidirectional="true" keepCallAlive="true" contentType="audio/x-mulaw;rate=8000">
+        ${wsUrl}
+    </Stream>
+</Response>`);
+});
+
 // Global Error Handler
 app.use((err: any, req: Request, res: Response, next: NextFunction) => {
   console.error('Unhandled Error:', err);

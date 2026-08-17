@@ -11,6 +11,7 @@ import bcrypt from 'bcryptjs';
 import ffmpegPath from 'ffmpeg-static';
 import { initMediasoup } from './services/mediasoup';
 import { handleSignaling } from './services/signaling';
+import { handleTelephony } from './services/telephony/orchestrator';
 import redis from './db/redis';
 import Redis from 'ioredis';
 
@@ -151,20 +152,35 @@ async function startServer() {
 
   server.on('upgrade', (request, socket, head) => {
     const url = request.url || '';
+    console.log(`[WS Upgrade Request] Path: ${url}`);
     const match = url.match(/^\/ws\/sessions\/([a-zA-Z0-9-]+)/);
+    const matchTelephony = url.match(/^\/ws\/telephony\/([a-zA-Z0-9-]+)\/([a-zA-Z0-9-]+)/);
     
     if (match) {
+      console.log(`[WS Upgrade Match] Signaling WebRTC session matched. Session ID: ${match[1]}`);
       wss.handleUpgrade(request, socket, head, (ws) => {
         const sessionId = match[1];
         wss.emit('connection', ws, request, sessionId);
       });
+    } else if (matchTelephony) {
+      console.log(`[WS Upgrade Match] Telephony session matched. Provider: ${matchTelephony[1]}, Session ID: ${matchTelephony[2]}`);
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        const provider = matchTelephony[1];
+        const sessionId = matchTelephony[2];
+        wss.emit('telephony_connection', ws, provider, sessionId);
+      });
     } else {
+      console.log(`[WS Upgrade Rejection] Path ${url} did not match any routes. Destroying socket.`);
       socket.destroy();
     }
   });
 
   wss.on('connection', (ws: any, request: any, sessionId: any) => {
     handleSignaling(ws, sessionId);
+  });
+
+  wss.on('telephony_connection', (ws: any, provider: string, sessionId: string) => {
+    handleTelephony(ws, provider, sessionId);
   });
 
   // 7. Start listening
