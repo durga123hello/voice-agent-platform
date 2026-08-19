@@ -144,6 +144,8 @@ export default function TestVoicePage() {
   const [selectedConfigId, setSelectedConfigId] = useState("");
   const [status, setStatus] = useState<"disconnected" | "connecting" | "connected" | "reconnecting" | "ended">("disconnected");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [transport, setTransport] = useState<"webrtc" | "msg91">("webrtc");
+  const [phoneNumber, setPhoneNumber] = useState("");
   
   // Real-time transcript/conversation state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -317,7 +319,11 @@ export default function TestVoicePage() {
         const sessionRes = await fetch(`${BACKEND_URL}/api/sessions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agentConfigId: selectedConfigId }),
+          body: JSON.stringify({
+            agentConfigId: selectedConfigId,
+            transport,
+            phoneNumber: transport === "msg91" ? phoneNumber : undefined
+          }),
         });
 
         if (!sessionRes.ok) {
@@ -340,11 +346,19 @@ export default function TestVoicePage() {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        addLog("Signaling WebSocket connection opened. Requesting router capabilities...");
+        addLog("Signaling WebSocket connection opened.");
         if (reconnectCountRef.current > 0) {
           addLog("Reconnection successful!");
           reconnectCountRef.current = 0;
         }
+
+        if (transport === "msg91") {
+          addLog(`MSG91 Transport engaged in standby mode. Telephone call initiated to ${phoneNumber || "unspecified number"}.`);
+          setStatus("connected");
+          return;
+        }
+
+        addLog("Requesting router capabilities...");
         ws.send(JSON.stringify({ type: "getRouterRtpCapabilities" }));
       };
 
@@ -867,10 +881,56 @@ export default function TestVoicePage() {
           </select>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+        <div className="form-group">
+          <label>Select Transport Channel</label>
+          <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
+            <button
+              type="button"
+              className={`btn ${transport === "webrtc" ? "btn-primary" : "btn-secondary"}`}
+              style={{ flex: 1, padding: "8px 16px" }}
+              onClick={() => setTransport("webrtc")}
+              disabled={status !== "disconnected"}
+            >
+              🌐 WebRTC (Microphone)
+            </button>
+            <button
+              type="button"
+              className={`btn ${transport === "msg91" ? "btn-primary" : "btn-secondary"}`}
+              style={{ flex: 1, padding: "8px 16px" }}
+              onClick={() => setTransport("msg91")}
+              disabled={status !== "disconnected"}
+            >
+              📞 MSG91 (Phone Call)
+            </button>
+          </div>
+        </div>
+
+        {transport === "msg91" && (
+          <div className="form-group" style={{ animation: "fadeIn 0.2s ease" }}>
+            <label htmlFor="candidate-phone">Candidate Phone Number</label>
+            <input
+              id="candidate-phone"
+              type="tel"
+              placeholder="+91 99999 99999"
+              value={phoneNumber}
+              onChange={(e) => setPhoneNumber(e.target.value)}
+              disabled={status !== "disconnected"}
+              style={{
+                width: "100%",
+                padding: "10px",
+                borderRadius: "6px",
+                border: "1px solid var(--border-color)",
+                backgroundColor: "#0d0f12",
+                color: "#ffffff"
+              }}
+            />
+          </div>
+        )}
+
+        <div style={{ display: "flex", alignItems: "center", gap: "16px", marginTop: "20px" }}>
           {status === "disconnected" ? (
             <button className="btn btn-success" onClick={handleConnect} disabled={configs.length === 0}>
-              Connect Microphone
+              {transport === "msg91" ? "Initiate Phone Call" : "Connect Microphone"}
             </button>
           ) : status === "ended" ? (
             <button className="btn btn-secondary" onClick={() => setStatus("disconnected")}>

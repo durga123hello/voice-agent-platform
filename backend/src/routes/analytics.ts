@@ -53,11 +53,14 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
       ? sessions.filter((s: any) => s.agentConfigVersion?.agentConfig?.id === configId)
       : sessions;
 
-    // 4. Filter sessions list for aggregates calculation
+    const activeStatuses = ['active', 'initiating', 'ringing', 'connected', 'in_progress'];
+    const completedTerminal = ['completed', 'user_hangup', 'ai_hangup'];
+    const abortedTerminal = ['aborted', 'no_answer', 'busy', 'rejected', 'callback_requested', 'unexpected_disconnect', 'failed', 'cancelled', 'timeout'];
+
     const aggregateSessions = tableSessions.filter((s: any) => {
       if (excludeActiveZeroTurns) {
         // Exclude active sessions that have 0 assistant turns
-        if (s.status === 'active' && s.messages.length === 0) {
+        if (activeStatuses.includes(s.status) && s.messages.length === 0) {
           return false;
         }
       }
@@ -131,8 +134,8 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
 
     aggregateSessions.forEach((s: any) => {
       // Status breakdown
-      if (s.status === 'completed') completedCount++;
-      else if (s.status === 'aborted') abortedCount++;
+      if (completedTerminal.includes(s.status)) completedCount++;
+      else if (abortedTerminal.includes(s.status)) abortedCount++;
       else activeCount++;
 
       // Session Duration (completed/aborted sessions only)
@@ -245,10 +248,11 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
       }
 
       // Nudge correlation
-      if (s.status === 'completed') {
+      // Nudge correlation
+      if (completedTerminal.includes(s.status)) {
         completedNudgesSum += sessionSilenceNudges;
         completedSessionsForNudges++;
-      } else if (s.status === 'aborted') {
+      } else if (abortedTerminal.includes(s.status)) {
         abortedNudgesSum += sessionSilenceNudges;
         abortedSessionsForNudges++;
       }

@@ -22,6 +22,7 @@ import {
   activeTurnLatencies,
   isTrivialUtterance
 } from '../signaling';
+import { updateSessionState, ANSWER_MEDIA_TIMEOUT_MS, MEDIA_RECONNECT_GRACE_MS, MEDIA_NO_AUDIO_TIMEOUT_MS, broadcastSessionState } from '../transports/lifecycle';
 
 // µ-law to Linear PCM lookup table for zero-latency JS transcoding
 const muLawTable = new Int16Array(256);
@@ -66,6 +67,35 @@ interface TelephonyPipeline {
 
 const telephonyPipelines = new Map<string, TelephonyPipeline>();
 const telephonySilenceTimers = new Map<string, NodeJS.Timeout>();
+
+export const answerMediaTimers = new Map<string, NodeJS.Timeout>();
+export const reconnectTimers = new Map<string, NodeJS.Timeout>();
+export const noAudioTimers = new Map<string, NodeJS.Timeout>();
+
+export function startAnswerMediaGuard(sessionId: string) {
+  const existing = answerMediaTimers.get(sessionId);
+  if (existing) clearTimeout(existing);
+
+  const timer = setTimeout(async () => {
+    console.log(`[Answer Guard] Media socket never connected for session ${sessionId} within timeout.`);
+    const { endSessionPipeline } = require('../signaling');
+    await updateSessionState(sessionId, {
+      callState: 'failed',
+      mediaState: 'failed',
+      errorCode: 'CALL_UNEXPECTED_DISCONNECT',
+      errorMessage: 'Media connection failed to establish within timeout.',
+      endedReason: 'Media WebSocket connection timeout'
+    });
+    try {
+      await endSessionPipeline(sessionId);
+    } catch (err) {
+      console.error(`[Answer Guard Error] Cleanup failed:`, err);
+    }
+    answerMediaTimers.delete(sessionId);
+  }, ANSWER_MEDIA_TIMEOUT_MS);
+
+  answerMediaTimers.set(sessionId, timer);
+}
 
 export function clearTelephonySilenceTimer(sessionId: string) {
   const timer = telephonySilenceTimers.get(sessionId);
@@ -145,6 +175,32 @@ export async function handleTelephonyBargeIn(sessionId: string, adapter: Telepho
 export function handleTelephony(ws: WebSocket, provider: string, sessionId: string) {
   console.log(`[Telephony Connect] Session ID: ${sessionId}, Provider: ${provider}`);
   
+  // 1. Answer -> Media Connection Guard Check
+  const guardTimer = answerMediaTimers.get(sessionId);
+  if (guardTimer) {
+    clearTimeout(guardTimer);
+    answerMediaTimers.delete(sessionId);
+    console.log(`[Answer Guard] Cleared media connection guard timer for session ${sessionId}.`);
+  }
+
+  // 2. Media Disconnect Reconnection Check
+  const reconnectTimer = reconnectTimers.get(sessionId);
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimers.delete(sessionId);
+    console.log(`[Media Reconnect] Recovered WebSocket connection for session ${sessionId}.`);
+  }
+
+  const existingPipeline = telephonyPipelines.get(sessionId);
+  if (existingPipeline && !existingPipeline.ended) {
+    console.log(`[Media Reconnect] Swapping WebSocket for session ${sessionId}.`);
+    if (existingPipeline.adapter && typeof (existingPipeline.adapter as any).updateSocket === 'function') {
+      (existingPipeline.adapter as any).updateSocket(ws);
+    }
+    updateSessionState(sessionId, { mediaState: 'connected' });
+    return;
+  }
+
   const adapter = TelephonyAdapterFactory.create(provider, ws);
   
   const pipeline: TelephonyPipeline = {
@@ -154,6 +210,32 @@ export function handleTelephony(ws: WebSocket, provider: string, sessionId: stri
     ended: false
   };
   telephonyPipelines.set(sessionId, pipeline);
+
+  const resetNoAudioTimer = () => {
+    if (pipeline.ended) return;
+    const existingTimer = noAudioTimers.get(sessionId);
+    if (existingTimer) clearTimeout(existingTimer);
+
+    const timer = setTimeout(async () => {
+      if (pipeline.ended) return;
+      console.warn(`[No Audio Guard] Session ${sessionId} connected but no audio packets received for ${MEDIA_NO_AUDIO_TIMEOUT_MS}ms.`);
+      const { endSessionPipeline } = require('../signaling');
+      await updateSessionState(sessionId, {
+        mediaState: 'failed',
+        errorCode: 'MEDIA_NO_AUDIO',
+        errorMessage: 'The call connected, but no audio was received.',
+        endedReason: 'No audio packets received timeout'
+      });
+      try {
+        await endSessionPipeline(sessionId);
+      } catch (err) {
+        console.error('[No Audio Guard Error] Cleanup failed:', err);
+      }
+      noAudioTimers.delete(sessionId);
+    }, MEDIA_NO_AUDIO_TIMEOUT_MS);
+
+    noAudioTimers.set(sessionId, timer);
+  };
 
   cancelActiveTurn(sessionId);
   clearTelephonySilenceTimer(sessionId);
@@ -169,6 +251,7 @@ export function handleTelephony(ws: WebSocket, provider: string, sessionId: stri
   });
 
   adapter.on('start', async (metadata) => {
+    resetNoAudioTimer();
     try {
       console.log(`[Telephony Start Event] Call connected:`, metadata);
       
@@ -200,7 +283,7 @@ export function handleTelephony(ws: WebSocket, provider: string, sessionId: stri
 
       // Start Deepgram Live STT WebSocket
       const deepgramHost = process.env.DEEPGRAM_MOCK_URL || 'wss://api.deepgram.com';
-      const deepgramUrl = `${deepgramHost}/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&utterance_end_ms=1000&endpointing=300&vad_events=true`;
+      const deepgramUrl = `${deepgramHost}/v1/listen?model=nova-2-phonecall&encoding=mulaw&sample_rate=8000&channels=1&interim_results=true&utterance_end_ms=2000&endpointing=500&vad_events=true`;
       
       console.log(`[Telephony STT] Connecting to Deepgram STT URL: ${deepgramUrl}`);
       const dgWs = new WebSocket(deepgramUrl, {
@@ -211,15 +294,14 @@ export function handleTelephony(ws: WebSocket, provider: string, sessionId: stri
         console.log('[Telephony STT] Deepgram STT WebSocket connection opened successfully.');
         resetTelephonySilenceTimer(sessionId, adapter);
         
-        // Feed inbound audio directly after decoding & resampling in JS (replaces FFmpeg process spawning to eliminate real-time piping latency)
+        // Feed inbound raw mulaw audio directly to Deepgram (eliminates resampling artifacts and quality loss)
         adapter.on('audio', (rawMulawAudio: Buffer) => {
+          resetNoAudioTimer();
           if (!pipeline.ended && dgWs.readyState === WebSocket.OPEN) {
             try {
-              const pcm8kHz = decodeMuLawToPcm(rawMulawAudio);
-              const pcm16kHz = resamplePcm8kHzTo16kHz(pcm8kHz);
-              dgWs.send(pcm16kHz);
+              dgWs.send(rawMulawAudio);
             } catch (err) {
-              console.error('[Telephony STT Inbound Error] Failed to decode/resample/send audio:', err);
+              console.error('[Telephony STT Inbound Error] Failed to send raw audio to Deepgram:', err);
             }
           }
         });
@@ -249,6 +331,23 @@ export function handleTelephony(ws: WebSocket, provider: string, sessionId: stri
               const currentSpeech = await getSessionSpeech(sessionId);
               const updatedSpeech = (currentSpeech + ' ' + transcript.trim()).trim();
               await setSessionSpeech(sessionId, updatedSpeech);
+
+              // Broadcast final transcript to UI clients
+              broadcastSessionState(sessionId, {
+                type: 'transcript',
+                isFinal: true,
+                text: transcript.trim()
+              });
+            }
+          } else {
+            if (transcript.trim()) {
+              console.log(`[Telephony STT Interim]: ${transcript}`);
+              // Broadcast interim transcript to UI clients
+              broadcastSessionState(sessionId, {
+                type: 'transcript',
+                isFinal: false,
+                text: transcript.trim()
+              });
             }
           }
 
@@ -281,20 +380,55 @@ export function handleTelephony(ws: WebSocket, provider: string, sessionId: stri
         }
       });
 
-      dgWs.on('error', (err) => {
+      dgWs.on('error', async (err) => {
         console.error('[Telephony STT Error]', err);
+        if (!pipeline.ended) {
+          const { endSessionPipeline } = require('../signaling');
+          await updateSessionState(sessionId, {
+            mediaState: 'failed',
+            errorCode: 'STT_ERROR',
+            errorMessage: err?.message || 'STT WebSocket error',
+            endedReason: 'STT pipeline error'
+          });
+          try {
+            await endSessionPipeline(sessionId);
+          } catch (cleanErr) {}
+        }
       });
 
-      dgWs.on('close', () => {
+      dgWs.on('close', async () => {
         console.log('[Telephony STT] Deepgram connection closed.');
+        if (!pipeline.ended) {
+          const { endSessionPipeline } = require('../signaling');
+          await updateSessionState(sessionId, {
+            mediaState: 'failed',
+            errorCode: 'STT_ERROR',
+            errorMessage: 'STT connection closed unexpectedly.',
+            endedReason: 'STT closed timeout'
+          });
+          try {
+            await endSessionPipeline(sessionId);
+          } catch (cleanErr) {}
+        }
       });
 
       // Trigger initial greeting turn so the agent introduces itself first
       console.log(`[Telephony Init Turn] Triggering initial LLM greeting turn...`);
+      await updateSessionState(sessionId, {
+        callState: 'connected',
+        mediaState: 'connected',
+        conversationState: 'greeting'
+      });
       triggerTelephonyLlmTurn(sessionId, adapter, session, session.agentConfigVersion, openAiKey, deepgramKey);
 
     } catch (err: any) {
       console.error('[Telephony Session Boot Error]', err);
+      await updateSessionState(sessionId, {
+        callState: 'failed',
+        mediaState: 'failed',
+        errorCode: 'MEDIA_CONNECTION_FAILED',
+        errorMessage: err?.message || 'Telephony session boot error'
+      });
       prisma.sessionEvent.create({
         data: {
           sessionId,
@@ -311,18 +445,64 @@ export function handleTelephony(ws: WebSocket, provider: string, sessionId: stri
     }
   });
 
-  adapter.on('close', () => {
-    if (pipeline.ended) return;
-    pipeline.ended = true;
-    
-    console.log(`[Telephony Cleanup] Cleaning up session pipeline for ${sessionId}`);
-    clearTelephonySilenceTimer(sessionId);
-    cancelActiveTurn(sessionId);
+    adapter.on('close', () => {
+      if (pipeline.ended) return;
 
-    if (pipeline.ffmpegProcess) {
-      try {
-        pipeline.ffmpegProcess.kill();
-      } catch (err) {}
+      console.log(`[Telephony Disconnect] Media socket closed for session ${sessionId}. Initiating reconnect grace period...`);
+      updateSessionState(sessionId, { mediaState: 'reconnecting' });
+
+      const reconnectTimer = setTimeout(async () => {
+        if (pipeline.ended) return;
+        pipeline.ended = true;
+
+        console.log(`[Telephony Disconnect] Reconnect grace period expired for session ${sessionId}. Terminating call.`);
+        clearTelephonySilenceTimer(sessionId);
+        cancelActiveTurn(sessionId);
+
+        if (pipeline.ffmpegProcess) {
+          try {
+            pipeline.ffmpegProcess.kill();
+          } catch (err) {}
+        }
+
+        if (pipeline.deepgramWs && pipeline.deepgramWs.readyState === WebSocket.OPEN) {
+          try {
+            pipeline.deepgramWs.close();
+          } catch (err) {}
+        }
+
+        telephonyPipelines.delete(sessionId);
+        reconnectTimers.delete(sessionId);
+
+        const { endSessionPipeline } = require('../signaling');
+        updateSessionState(sessionId, {
+          callState: 'failed',
+          mediaState: 'failed',
+          conversationState: 'completed',
+          errorCode: 'MEDIA_CONNECTION_FAILED',
+          errorMessage: 'Media WebSocket connection lost and failed to recover.',
+          endedReason: 'Media WebSocket disconnect timeout'
+        }).catch(dbErr => console.error('[Database Log Error] Failed to finalize session status:', dbErr));
+
+        try {
+          await endSessionPipeline(sessionId);
+        } catch (err) {}
+      }, MEDIA_RECONNECT_GRACE_MS);
+
+      reconnectTimers.set(sessionId, reconnectTimer);
+    });
+}
+
+export function closeTelephonySession(sessionId: string) {
+  const pipeline = telephonyPipelines.get(sessionId);
+  if (pipeline) {
+    console.log(`[Telephony Cleanup] Force ending telephony pipeline for ${sessionId}`);
+    pipeline.ended = true;
+
+    try {
+      pipeline.adapter.close();
+    } catch (err) {
+      console.error(`[Telephony Cleanup Error] Failed to close adapter:`, err);
     }
 
     if (pipeline.deepgramWs && pipeline.deepgramWs.readyState === WebSocket.OPEN) {
@@ -331,12 +511,38 @@ export function handleTelephony(ws: WebSocket, provider: string, sessionId: stri
       } catch (err) {}
     }
 
+    if (pipeline.ffmpegProcess) {
+      try {
+        pipeline.ffmpegProcess.kill();
+      } catch (err) {}
+    }
+
+    // Cancel active turns/TTS workers
+    cancelActiveTurn(sessionId);
+
+    // Clear and remove all guard/reconnect/silence/no-audio timers
+    clearTelephonySilenceTimer(sessionId);
+
+    const answerTimer = answerMediaTimers.get(sessionId);
+    if (answerTimer) {
+      clearTimeout(answerTimer);
+      answerMediaTimers.delete(sessionId);
+    }
+
+    const reconnectTimer = reconnectTimers.get(sessionId);
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimers.delete(sessionId);
+    }
+
+    const noAudioTimer = noAudioTimers.get(sessionId);
+    if (noAudioTimer) {
+      clearTimeout(noAudioTimer);
+      noAudioTimers.delete(sessionId);
+    }
+
     telephonyPipelines.delete(sessionId);
-    prisma.session.update({
-      where: { id: sessionId },
-      data: { endedAt: new Date(), status: 'completed' }
-    }).catch(dbErr => console.error('[Database Log Error] Failed to finalize session status:', dbErr));
-  });
+  }
 }
 
 async function triggerTelephonyLlmTurn(
@@ -355,6 +561,7 @@ async function triggerTelephonyLlmTurn(
   }
 
   await setSessionState(sessionId, 'thinking');
+  await updateSessionState(sessionId, { conversationState: 'processing' });
   clearTelephonySilenceTimer(sessionId);
 
   try {
@@ -398,6 +605,7 @@ async function triggerTelephonyLlmTurn(
       console.log(`[Telephony] Finished speaking turn. Total chunks played: ${totalChunks}`);
       activeSessions.delete(sessionId);
       await setSessionState(sessionId, 'listening');
+      await updateSessionState(sessionId, { conversationState: 'listening' });
       resetTelephonySilenceTimer(sessionId, adapter);
     });
 
@@ -558,7 +766,13 @@ async function triggerTelephonyLlmTurn(
           }
         }
       }).catch(dbErr => console.error('[Database Log Error] Failed to log LLM error:', dbErr));
+      await updateSessionState(sessionId, {
+        conversationState: 'idle',
+        errorCode: 'LLM_ERROR',
+        errorMessage: error?.message || 'OpenAI LLM turn failed'
+      });
       await setSessionState(sessionId, 'listening');
+      await updateSessionState(sessionId, { conversationState: 'listening' });
       resetTelephonySilenceTimer(sessionId, adapter);
     }
   }

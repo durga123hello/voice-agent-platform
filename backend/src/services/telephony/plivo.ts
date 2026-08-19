@@ -15,11 +15,30 @@ export class PlivoAdapter extends TelephonyAdapter {
   private setupListeners() {
     this.ws.on('message', (data: WebSocket.RawData) => {
       try {
-        const message = JSON.parse(data.toString());
+        if (!data) {
+          throw new Error('Received empty or null WebSocket message');
+        }
+        
+        let message: any;
+        try {
+          message = JSON.parse(data.toString());
+        } catch (jsonErr: any) {
+          console.error('[Plivo Adapter Error] Malformed JSON packet ignored:', jsonErr.message);
+          return;
+        }
+        
+        if (!message || typeof message !== 'object') {
+          console.error('[Plivo Adapter Error] Unexpected non-object packet structure:', message);
+          return;
+        }
         
         switch (message.event) {
           case 'start': {
             const startData = message.start;
+            if (!startData || !startData.streamId || !startData.callId) {
+              console.error('[Plivo Adapter Error] Malformed start event metadata:', startData);
+              return;
+            }
             this.streamId = startData.streamId;
             this.callId = startData.callId;
             
@@ -37,8 +56,21 @@ export class PlivoAdapter extends TelephonyAdapter {
           
           case 'media': {
             if (message.media && message.media.payload) {
-              const rawAudio = Buffer.from(message.media.payload, 'base64');
-              this.emit('audio', rawAudio);
+              try {
+                const payloadStr = message.media.payload;
+                if (typeof payloadStr !== 'string') {
+                  throw new Error('Payload is not a string');
+                }
+                const rawAudio = Buffer.from(payloadStr, 'base64');
+                if (rawAudio.length === 0) {
+                  throw new Error('Decoded base64 audio payload is empty');
+                }
+                this.emit('audio', rawAudio);
+              } catch (mediaErr: any) {
+                console.error(`[Plivo Adapter Error] Invalid base64/media data chunk:`, mediaErr.message);
+              }
+            } else {
+              console.warn('[Plivo Adapter Warning] Media packet missing payload');
             }
             break;
           }
@@ -53,8 +85,8 @@ export class PlivoAdapter extends TelephonyAdapter {
             // Ignore other events
             break;
         }
-      } catch (err) {
-        console.error('[Plivo Adapter Error] Failed to parse WebSocket message:', err);
+      } catch (err: any) {
+        console.error('[Plivo Adapter Error] Failed to process message:', err.message);
       }
     });
 
@@ -115,6 +147,18 @@ export class PlivoAdapter extends TelephonyAdapter {
         }
       });
     });
+  }
+
+  updateSocket(newWs: WebSocket) {
+    try {
+      const oldWs = this.ws;
+      oldWs.removeAllListeners();
+      if (oldWs.readyState === WebSocket.OPEN || oldWs.readyState === WebSocket.CONNECTING) {
+        oldWs.close();
+      }
+    } catch (err) {}
+    this.ws = newWs;
+    this.setupListeners();
   }
 
   async close(): Promise<void> {

@@ -76,7 +76,7 @@ export async function getDeepgramTtsMulaw(
 }
 
 export class TtsTelephonyWorker {
-  private queue: string[] = [];
+  private queue: Array<{ sentence: string; promise: Promise<Buffer> }> = [];
   private active = false;
   private cancelled = false;
   private streamFinished = false;
@@ -92,7 +92,10 @@ export class TtsTelephonyWorker {
 
   push(sentence: string) {
     if (this.cancelled) return;
-    this.queue.push(sentence);
+    
+    // Start generating TTS in the background immediately
+    const promise = getDeepgramTtsMulaw(this.sessionId, sentence, this.voice, this.apiKey);
+    this.queue.push({ sentence, promise });
     this.processNext();
   }
 
@@ -118,11 +121,11 @@ export class TtsTelephonyWorker {
     }
 
     this.active = true;
-    const sentence = this.queue.shift()!;
+    const { sentence, promise } = this.queue[0];
     try {
-      console.log(`[TTS Telephony Worker] Generating TTS for: "${sentence}" using voice ${this.voice}`);
+      console.log(`[TTS Telephony Worker] Generating/Awaiting TTS for: "${sentence}"`);
       const ttsChunkStart = Date.now();
-      const audioBuffer = await getDeepgramTtsMulaw(this.sessionId, sentence, this.voice, this.apiKey);
+      const audioBuffer = await promise;
       const ttsChunkDuration = Date.now() - ttsChunkStart;
 
       // Record latency checkpoint
@@ -153,9 +156,18 @@ export class TtsTelephonyWorker {
           (latencies as any).ttsRelayDurations.push(relayMs);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('[TTS Telephony Worker Error] TTS generation failed:', err);
+      const { updateSessionState } = require('../transports/lifecycle');
+      const { endSessionPipeline } = require('../signaling');
+      updateSessionState(this.sessionId, {
+        errorCode: 'TTS_ERROR',
+        errorMessage: err?.message || 'TTS worker generation failed',
+        endedReason: 'TTS generation failure'
+      }).catch(() => {});
+      endSessionPipeline(this.sessionId).catch(() => {});
     } finally {
+      this.queue.shift();
       this.active = false;
       this.processNext();
     }

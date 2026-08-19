@@ -3,6 +3,7 @@ import prisma from '../db/client';
 import { endSessionPipeline } from '../services/signaling';
 import { DEFAULT_TENANT_ID } from '../index';
 import { apiKeyAuthOptional } from '../middleware/apiKeyAuth';
+import { updateSessionState, mapErrorCodeToUserMessage } from '../services/transports/lifecycle';
 
 const router = Router();
 
@@ -50,10 +51,15 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 // Create session: POST /api/sessions
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { agentConfigId } = req.body;
+    const { agentConfigId, transport, phoneNumber } = req.body;
 
     if (!agentConfigId || typeof agentConfigId !== 'string') {
       res.status(400).json({ error: 'agentConfigId is required.' });
+      return;
+    }
+
+    if (transport && !['webrtc', 'plivo'].includes(transport)) {
+      res.status(400).json({ error: "Invalid transport. Must be 'webrtc' or 'plivo'." });
       return;
     }
 
@@ -73,12 +79,19 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       return;
     }
 
+    const resolvedTransport = transport || 'webrtc';
+
     // Create session in database linking to latest version
     const session = await prisma.session.create({
       data: {
         tenantId: getTenantId(req),
         agentConfigVersionId: latestVersion.id,
-        status: 'active'
+        status: 'active',
+        transport: resolvedTransport,
+        phoneNumber: phoneNumber || null,
+        callState: resolvedTransport === 'webrtc' ? 'connected' : 'initiating',
+        mediaState: resolvedTransport === 'webrtc' ? 'connecting' : 'disconnected',
+        conversationState: 'idle'
       }
     });
 
@@ -87,6 +100,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       status: session.status,
       agentConfigVersionId: session.agentConfigVersionId,
       startedAt: session.startedAt,
+      transport: session.transport,
+      phoneNumber: session.phoneNumber,
       wsToken: `token-${session.id}` // Placeholder WS token as specified by API spec
     });
   } catch (error) {
@@ -96,6 +111,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 
 // Create outbound Plivo call: POST /api/sessions/outbound
 router.post('/outbound', async (req: Request, res: Response, next: NextFunction) => {
+  let session: any;
   try {
     const { agentConfigId, phoneNumber } = req.body;
 
@@ -108,6 +124,13 @@ router.post('/outbound', async (req: Request, res: Response, next: NextFunction)
       return;
     }
 
+    // Phone number format validation (E.164-like check: at least 7 digits, no invalid chars)
+    const cleanPhone = phoneNumber.replace(/[+\s-]/g, '');
+    if (!/^\d{7,15}$/.test(cleanPhone)) {
+      res.status(400).json({ error: 'Invalid phone number format. Must contain between 7 and 15 digits.' });
+      return;
+    }
+
     // Verify agent config exists and find latest version
     const latestVersion = await prisma.agentConfigVersion.findFirst({
       where: {
@@ -124,12 +147,32 @@ router.post('/outbound', async (req: Request, res: Response, next: NextFunction)
       return;
     }
 
+    // Prevent duplicate active calls to the same number
+    const existingActive = await prisma.session.findFirst({
+      where: {
+        phoneNumber,
+        status: 'active',
+        transport: 'plivo'
+      }
+    });
+
+    if (existingActive) {
+      console.warn(`[Sessions Outbound] Call already active for number ${phoneNumber}. Rejecting duplicate request.`);
+      res.status(409).json({ error: 'A call is already active for this phone number.' });
+      return;
+    }
+
     // Create session in database
-    const session = await prisma.session.create({
+    session = await prisma.session.create({
       data: {
         tenantId: getTenantId(req),
         agentConfigVersionId: latestVersion.id,
-        status: 'active'
+        status: 'active',
+        transport: 'plivo',
+        phoneNumber,
+        callState: 'initiating',
+        mediaState: 'disconnected',
+        conversationState: 'idle'
       }
     });
 
@@ -140,41 +183,108 @@ router.post('/outbound', async (req: Request, res: Response, next: NextFunction)
     const answerUrlBase = process.env.PLIVO_ANSWER_URL_BASE;
 
     if (!authId || !authToken || !fromNumber || !answerUrlBase) {
-      res.status(500).json({ error: 'Plivo is not fully configured in the server environment.' });
+      const errMsg = 'Plivo is not fully configured in the server environment (missing AUTH_ID, AUTH_TOKEN, FROM_NUMBER or ANSWER_URL_BASE).';
+      await updateSessionState(session.id, {
+        callState: 'failed',
+        errorCode: 'CALL_PROVIDER_ERROR',
+        errorMessage: errMsg
+      });
+      res.status(500).json({ error: errMsg });
       return;
     }
 
     // Trigger Outbound Call via Plivo API
     const answerUrl = `${answerUrlBase}/api/telephony/plivo/answer/${session.id}`;
+    const callbackUrl = `${answerUrlBase}/api/telephony/plivo/status/${session.id}`;
     const plivoUrl = `https://api.plivo.com/v1/Account/${authId}/Call/`;
     const authString = Buffer.from(`${authId}:${authToken}`).toString('base64');
 
-    const plivoRes = await fetch(plivoUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Basic ${authString}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        from: fromNumber,
-        to: phoneNumber,
-        answer_url: answerUrl,
-        answer_method: 'POST'
-      })
-    });
+    console.log(`[Plivo Outbound] Dispatching call to ${phoneNumber} with answer_url=${answerUrl} and callback_url=${callbackUrl}`);
+
+    const { PLIVO_API_MAX_RETRIES } = require('../services/transports/lifecycle');
+
+    let plivoRes: any = null;
+    let attempt = 0;
+    let lastError: any = null;
+
+    while (attempt < PLIVO_API_MAX_RETRIES) {
+      try {
+        console.log(`[Plivo Outbound] Dispatching call attempt ${attempt + 1}/${PLIVO_API_MAX_RETRIES}...`);
+        plivoRes = await fetch(plivoUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Basic ${authString}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            from: fromNumber,
+            to: phoneNumber,
+            answer_url: answerUrl,
+            answer_method: 'POST',
+            callback_url: callbackUrl,
+            callback_method: 'POST'
+          })
+        });
+
+        if (plivoRes.ok) {
+          break;
+        }
+
+        const status = plivoRes.status;
+        const responseText = await plivoRes.clone().text();
+        console.warn(`[Plivo Outbound Attempt Failed] HTTP Status: ${status}, Response: ${responseText}`);
+
+        if (status === 400 || status === 401 || status === 403 || status === 404) {
+          console.error(`[Plivo Outbound] Permanent API error ${status}. Aborting retries.`);
+          lastError = new Error(`Plivo API returned permanent status ${status}: ${responseText}`);
+          break;
+        }
+
+        lastError = new Error(`Plivo API returned transient status ${status}: ${responseText}`);
+      } catch (err: any) {
+        console.warn(`[Plivo Outbound Attempt Error] Network/fetch error:`, err);
+        lastError = err;
+      }
+
+      attempt++;
+      if (attempt < PLIVO_API_MAX_RETRIES) {
+        const backoffMs = Math.pow(2, attempt) * 500;
+        console.log(`[Plivo Outbound] Backing off for ${backoffMs}ms before retry...`);
+        await new Promise(resolve => setTimeout(resolve, backoffMs));
+      }
+    }
+
+    if (!plivoRes || !plivoRes.ok) {
+      const finalErr = lastError || new Error(`Plivo trigger ultimately failed after ${PLIVO_API_MAX_RETRIES} attempts.`);
+      throw finalErr;
+    }
 
     const responseText = await plivoRes.text();
-    if (!plivoRes.ok) {
-      throw new Error(`Plivo API trigger failed: ${responseText}`);
-    }
+    const parsedPlivo = JSON.parse(responseText);
+
+    const callUuid = parsedPlivo.request_uuid || '';
+
+    // Update session state to ringing upon successful trigger
+    await updateSessionState(session.id, {
+      providerCallId: callUuid,
+      callState: 'ringing'
+    });
 
     res.status(201).json({
       id: session.id,
-      status: session.status,
+      status: 'active',
       startedAt: session.startedAt,
-      plivoResponse: JSON.parse(responseText)
+      plivoResponse: parsedPlivo
     });
-  } catch (error) {
+  } catch (error: any) {
+    console.error('[Plivo Outbound Error] Failed to trigger call:', error);
+    if (session) {
+      await updateSessionState(session.id, {
+        callState: 'failed',
+        errorCode: 'CALL_PROVIDER_ERROR',
+        errorMessage: error?.message || 'Plivo API trigger failed'
+      });
+    }
     next(error);
   }
 });
@@ -235,8 +345,15 @@ router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => 
     const { id } = req.params;
     const { status, summary } = req.body;
 
-    if (status && !['active', 'completed', 'aborted'].includes(status)) {
-      res.status(400).json({ error: "Invalid status. Must be 'active', 'completed', or 'aborted'." });
+    const DETAILED_STATUSES = [
+      'initiating', 'ringing', 'connected', 'in_progress', 'completed',
+      'no_answer', 'busy', 'rejected', 'callback_requested', 'user_hangup',
+      'ai_hangup', 'unexpected_disconnect', 'failed', 'cancelled', 'timeout',
+      'active', 'aborted'
+    ];
+
+    if (status && !DETAILED_STATUSES.includes(status)) {
+      res.status(400).json({ error: `Invalid status. Must be one of: ${DETAILED_STATUSES.join(', ')}` });
       return;
     }
 
@@ -250,7 +367,10 @@ router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => 
       return;
     }
 
-    if (status === 'aborted' && existing.status === 'active') {
+    const activeStatuses = ['active', 'initiating', 'ringing', 'connected', 'in_progress'];
+    const abortedTerminal = ['aborted', 'no_answer', 'busy', 'rejected', 'callback_requested', 'unexpected_disconnect', 'failed', 'cancelled', 'timeout'];
+
+    if (status && abortedTerminal.includes(status) && activeStatuses.includes(existing.status)) {
       const sessionMessages = await prisma.message.findMany({
         where: { sessionId: id, role: 'assistant' }
       });
@@ -270,12 +390,15 @@ router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => 
       console.log(`[PATCH Session Aborted] Logged abort event for session ${id} at turn ${turnCount} after ${elapsed}ms.`);
     }
 
+    const completedTerminal = ['completed', 'user_hangup', 'ai_hangup'];
+    const isTerminal = status && (completedTerminal.includes(status) || abortedTerminal.includes(status));
+
     const session = await prisma.session.update({
       where: { id },
       data: {
         status: status || undefined,
         summary: summary || undefined,
-        endedAt: (status === 'completed' || status === 'aborted') ? new Date() : undefined
+        endedAt: isTerminal ? new Date() : undefined
       }
     });
 
@@ -313,6 +436,56 @@ router.post('/:id/end', async (req: Request, res: Response, next: NextFunction) 
     await endSessionPipeline(id);
 
     res.json(updatedSession);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Fetch single session detail: GET /api/sessions/:id
+router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+    const session = await prisma.session.findFirst({
+      where: { id, tenantId: getTenantId(req) },
+      include: {
+        agentConfigVersion: {
+          include: {
+            agentConfig: {
+              select: {
+                name: true
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!session) {
+      res.status(404).json({ error: 'Session not found.' });
+      return;
+    }
+
+    res.json({
+      id: session.id,
+      tenantId: session.tenantId,
+      status: session.status,
+      transport: session.transport,
+      phoneNumber: session.phoneNumber,
+      startedAt: session.startedAt,
+      endedAt: session.endedAt,
+      providerCallId: session.providerCallId,
+      callState: session.callState,
+      mediaState: session.mediaState,
+      conversationState: session.conversationState,
+      endedReason: session.endedReason,
+      errorCode: session.errorCode,
+      errorMessage: session.errorMessage,
+      userMessage: session.userMessage,
+      lastActivityAt: session.lastActivityAt,
+      agentConfig: {
+        name: session.agentConfigVersion.agentConfig.name
+      }
+    });
   } catch (error) {
     next(error);
   }

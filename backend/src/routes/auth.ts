@@ -158,7 +158,7 @@ router.post('/request-login-otp', emailRateLimiter, async (req, res, next) => {
       message: 'If this email is registered, a secure login OTP code has been sent.'
     };
 
-    if (tenant && tenant.emailVerified) {
+    if (tenant) {
       // Generate 6-digit OTP
       const code = crypto.randomInt(100000, 999999).toString();
       const codeHash = crypto.createHash('sha256').update(code).digest('hex');
@@ -228,6 +228,15 @@ router.post('/verify-login-otp', async (req, res, next) => {
     if (!tenant) {
       res.status(404).json({ error: 'Tenant no longer exists' });
       return;
+    }
+
+    // Set emailVerified to true upon successful verification
+    if (!tenant.emailVerified) {
+      await prisma.tenant.update({
+        where: { id: tenant.id },
+        data: { emailVerified: true }
+      });
+      tenant.emailVerified = true;
     }
 
     // Issue JWT token

@@ -1,28 +1,17 @@
 import WebSocket from 'ws';
-import { getRouter } from './mediasoup';
-import { findFreeUdpPort } from '../utils/ports';
 import prisma from '../db/client';
 import { DEFAULT_USER_ID } from '../index';
 import redis from '../db/redis';
 import { decrypt } from '../utils/crypto';
-import { spawn } from 'child_process';
-import path from 'path';
-import os from 'os';
-import fs from 'fs';
-import ffmpegPath from 'ffmpeg-static';
-
-const transports = new Map<string, any>();
-const producers = new Map<string, any>();
+import { BaseTransport } from './transports/types';
+import { WebRTCTransport } from './transports/WebRTCTransport';
+import { MSG91Transport } from './transports/MSG91Transport';
+import { detectCallbackRequest } from '../utils/callbackDetector';
+import { updateSessionState, registerUiWebSocket } from './transports/lifecycle';
 
 interface SessionPipeline {
-  clientWs: WebSocket | null;
+  transport: BaseTransport;
   deepgramWs: WebSocket | null;
-  ffmpegProcess: any;
-  consumer: any;
-  plainTransport: any;
-  sdpPath: string;
-  mediasoupTransports: Set<string>;
-  mediasoupProducers: Set<string>;
   ended: boolean;
   totalBytesSent?: number;
   chunksLog?: { streamTime: number; sentTime: number }[];
@@ -204,15 +193,17 @@ export function isTrivialUtterance(text: string): boolean {
   return false;
 }
 
-export async function endSessionPipeline(sessionId: string, closingWs?: WebSocket) {
+export async function endSessionPipeline(sessionId: string) {
+  // Telephony cleanup bridge
+  try {
+    const { closeTelephonySession } = require('./telephony/orchestrator');
+    closeTelephonySession(sessionId);
+  } catch (err) {
+    console.error(`[endSessionPipeline] Telephony cleanup failed:`, err);
+  }
+
   const pipeline = sessionPipelines.get(sessionId);
   if (!pipeline) return;
-
-  // Reconnect guard: If a closingWs is specified, only clean up if it matches the current registry socket
-  if (closingWs && pipeline.clientWs !== closingWs) {
-    console.log(`[endSessionPipeline] Ignoring close event from stale WebSocket for session ${sessionId}`);
-    return;
-  }
 
   // Prevent multiple cleanups
   pipeline.ended = true;
@@ -240,12 +231,11 @@ export async function endSessionPipeline(sessionId: string, closingWs?: WebSocke
       const elapsed = Date.now() - (dbSession.startedAt ? dbSession.startedAt.getTime() : Date.now());
       const turnsCount = dbSession.messages.length;
 
-      await prisma.session.update({
-        where: { id: sessionId },
-        data: {
-          status: 'aborted',
-          endedAt: new Date()
-        }
+      await updateSessionState(sessionId, {
+        callState: 'failed',
+        mediaState: 'closed',
+        conversationState: 'completed',
+        endedReason: 'Session aborted'
       });
 
       await prisma.sessionEvent.create({
@@ -257,76 +247,26 @@ export async function endSessionPipeline(sessionId: string, closingWs?: WebSocke
             elapsedTimeMs: elapsed
           }
         }
-      });
-      console.log(`[endSessionPipeline] Auto-aborted active session ${sessionId} at turn ${turnsCount} after ${elapsed}ms.`);
+      }).catch((dbErr: any) => console.error('[Database Log Error] Failed to log abort event:', dbErr));
+      console.log(`[endSessionPipeline] Session auto-aborted at turn ${turnsCount} after ${elapsed}ms.`);
     }
   } catch (err) {
-    console.error('[endSessionPipeline] Database update error:', err);
+    console.error('[endSessionPipeline] Database update failure:', err);
   }
 
-  // 2. Close client WS
-  if (pipeline.clientWs && pipeline.clientWs.readyState === WebSocket.OPEN) {
-    try {
-      pipeline.clientWs.send(JSON.stringify({ type: 'sessionEnded' }));
-      pipeline.clientWs.close();
-    } catch (e) {}
+  // 3. Close the transport pipelines
+  try {
+    await pipeline.transport.disconnect();
+  } catch (err) {
+    console.error('[endSessionPipeline] Transport disconnect failure:', err);
   }
 
-  // 3. Close Deepgram WS
-  if (pipeline.deepgramWs && pipeline.deepgramWs.readyState === WebSocket.OPEN) {
+  // 4. Close Deepgram WS
+  if (pipeline.deepgramWs) {
     try {
       pipeline.deepgramWs.close();
     } catch (e) {}
-  }
-
-  // 4. Kill FFmpeg process
-  if (pipeline.ffmpegProcess) {
-    try {
-      pipeline.ffmpegProcess.kill('SIGKILL');
-    } catch (e) {}
-  }
-
-  // 5. Close consumer & plainTransport
-  if (pipeline.consumer) {
-    try {
-      pipeline.consumer.close();
-    } catch (e) {}
-  }
-  if (pipeline.plainTransport) {
-    try {
-      pipeline.plainTransport.close();
-    } catch (e) {}
-  }
-
-  // 6. Delete SDP file
-  if (pipeline.sdpPath) {
-    try {
-      if (fs.existsSync(pipeline.sdpPath)) {
-        fs.unlinkSync(pipeline.sdpPath);
-      }
-    } catch (e) {}
-  }
-
-  // 7. Close Mediasoup Producers
-  for (const producerId of pipeline.mediasoupProducers) {
-    const producer = producers.get(producerId);
-    if (producer) {
-      try {
-        producer.close();
-      } catch (e) {}
-      producers.delete(producerId);
-    }
-  }
-
-  // 8. Close Mediasoup Transports
-  for (const transportId of pipeline.mediasoupTransports) {
-    const transport = transports.get(transportId);
-    if (transport) {
-      try {
-        transport.close();
-      } catch (e) {}
-      transports.delete(transportId);
-    }
+    pipeline.deepgramWs = null;
   }
 }
 
@@ -336,83 +276,33 @@ function clearSilenceTimer(sessionId: string) {
     clearTimeout(timer);
     silenceTimers.delete(sessionId);
   }
-  deleteNudgeCount(sessionId).catch(err => console.error('[Redis Error] Failed to clear nudge count:', err));
 }
 
 function stopSilenceTimer(sessionId: string) {
-  const timer = silenceTimers.get(sessionId);
-  if (timer) {
-    clearTimeout(timer);
-    silenceTimers.delete(sessionId);
-  }
+  clearSilenceTimer(sessionId);
+  console.log(`[Silence Timer] Stopped for session: ${sessionId}`);
 }
 
-async function resetSilenceTimer(sessionId: string, clientWs: WebSocket) {
-  if (!sessionPipelines.has(sessionId)) {
-    return;
-  }
-  const existingTimer = silenceTimers.get(sessionId);
-  if (existingTimer) {
-    clearTimeout(existingTimer);
-  }
-
-  if (clientWs.readyState !== WebSocket.OPEN) {
-    return;
-  }
-
-  // State machine check: only count down/reset if the state machine is actually in 'listening' state!
-  const currentState = await getSessionState(sessionId);
-  if (currentState !== 'listening') {
-    console.log(`[Silence Handler] State is ${currentState}, suspending/clearing silence timer for session ${sessionId}`);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-      silenceTimers.delete(sessionId);
-    }
-    return;
-  }
+async function resetSilenceTimer(sessionId: string, transport: BaseTransport) {
+  clearSilenceTimer(sessionId);
 
   const timer = setTimeout(async () => {
     try {
-      if (!sessionPipelines.has(sessionId)) {
-        return;
-      }
-      // Re-verify state is still 'listening' (guard against races)
-      const state = await getSessionState(sessionId);
-      if (state !== 'listening') {
-        console.log(`[Silence Handler] State changed to ${state} during timeout, ignoring nudge trigger.`);
-        return;
-      }
-      if (activeSessions.has(sessionId)) {
-        // If the assistant is currently speaking or generating, check again in 15s
-        await resetSilenceTimer(sessionId, clientWs);
+      const count = await getNudgeCount(sessionId);
+      if (count >= MAX_NUDGES) {
+        console.log(`[Silence Handler] Max nudges (${MAX_NUDGES}) reached for session ${sessionId}. Ending session...`);
+        await endSessionPipeline(sessionId);
         return;
       }
 
-      const nudgeCount = await getNudgeCount(sessionId);
-      if (nudgeCount >= MAX_NUDGES) {
-        console.log(`[Silence Handler] Max nudges (${MAX_NUDGES}) reached for session ${sessionId}. Stopping nudges.`);
-        return;
-      }
-
-      console.log(`[Silence Handler] Silence detected for 15s in session ${sessionId}. Triggering nudge ${nudgeCount + 1}...`);
-      
-      // Log session event
-      await prisma.sessionEvent.create({
-        data: {
-          sessionId,
-          eventType: 'silence_prompt',
-          metadata: { nudgeIndex: nudgeCount + 1 }
-        }
-      });
-
-      // Increment nudge count
       await incrementNudgeCount(sessionId);
+      console.log(`[Silence Handler] 15s silence detected for session ${sessionId}. Triggering nudge ${count + 1}/${MAX_NUDGES}.`);
 
       // Trigger synthetic LLM turn
-      await triggerLlmTurn(sessionId, clientWs, true);
+      await triggerLlmTurn(sessionId, transport, true);
 
       // Reset the timer for the next check
-      await resetSilenceTimer(sessionId, clientWs);
+      await resetSilenceTimer(sessionId, transport);
     } catch (err) {
       console.error('[Silence Handler Error]', err);
     }
@@ -421,8 +311,11 @@ async function resetSilenceTimer(sessionId: string, clientWs: WebSocket) {
   silenceTimers.set(sessionId, timer);
 }
 
-export function handleSignaling(ws: WebSocket, sessionId: string) {
+export async function handleSignaling(ws: WebSocket, sessionId: string) {
   console.log(`[WebSocket Open] Session ID: ${sessionId}`);
+  if (ws) {
+    registerUiWebSocket(sessionId, ws);
+  }
 
   // Reconnect check
   const isReconnect = sessionPipelines.has(sessionId);
@@ -437,16 +330,28 @@ export function handleSignaling(ws: WebSocket, sessionId: string) {
     }).catch((err: any) => console.error('[Database Log Error] Failed to log reconnect event:', err));
   }
 
-  // Initialize pipeline synchronously first, so we don't yield the event loop before listeners are bound!
+  // Fetch session details to check transport type
+  const session = await prisma.session.findUnique({
+    where: { id: sessionId }
+  });
+
+  if (session?.transport === 'plivo') {
+    console.log(`[Signaling] Telemetry connection for Plivo session ${sessionId}. Skipping WebRTC transport initialization.`);
+    return;
+  }
+
+  const isMsg91 = session?.transport === 'msg91';
+  let transport: BaseTransport;
+
+  if (isMsg91) {
+    transport = new MSG91Transport(sessionId, session?.phoneNumber);
+  } else {
+    transport = new WebRTCTransport(ws, sessionId);
+  }
+
   sessionPipelines.set(sessionId, {
-    clientWs: ws,
+    transport,
     deepgramWs: null,
-    ffmpegProcess: null,
-    consumer: null,
-    plainTransport: null,
-    sdpPath: '',
-    mediasoupTransports: new Set<string>(),
-    mediasoupProducers: new Set<string>(),
     ended: false,
     totalBytesSent: 0,
     chunksLog: [],
@@ -454,10 +359,9 @@ export function handleSignaling(ws: WebSocket, sessionId: string) {
     interimTranscriptCount: 0
   });
 
-  // Reconnect cleanup safety: Cancel active turn (synchronous)
+  // Reconnect cleanup safety: Cancel active turn
   cancelActiveTurn(sessionId);
 
-  // Trigger async Redis cleanup in background without awaiting, so execution stays synchronous
   Promise.all([
     setSessionState(sessionId, 'listening'),
     deleteSessionSpeech(sessionId),
@@ -471,355 +375,235 @@ export function handleSignaling(ws: WebSocket, sessionId: string) {
   // Synchronously reset timer references
   clearSilenceTimer(sessionId);
 
-  ws.on('message', async (message: string) => {
-    if (!sessionPipelines.has(sessionId)) {
-      console.log(`[Signaling] WebSocket message received after session ended. Ignoring.`);
-      return;
+  // Bind transport communication and control pipelines
+  transport.on('audio', async (pcmChunk: Buffer) => {
+    const pipeline = sessionPipelines.get(sessionId);
+    if (!pipeline || pipeline.ended) return;
+
+    const deepgramWs = pipeline.deepgramWs;
+    if (deepgramWs && deepgramWs.readyState === WebSocket.OPEN) {
+      deepgramWs.send(pcmChunk);
+      pipeline.totalBytesSent = (pipeline.totalBytesSent || 0) + pcmChunk.length;
+      const streamTime = pipeline.totalBytesSent / 32000;
+      pipeline.chunksLog = pipeline.chunksLog || [];
+      pipeline.chunksLog.push({ streamTime, sentTime: Date.now() });
     }
-    try {
-      const data = JSON.parse(message);
-      console.log(`[WebSocket Message Received] Session: ${sessionId}, type: ${data.type}`);
-      const router = getRouter();
+  });
 
-      switch (data.type) {
-        case 'getRouterRtpCapabilities': {
-          console.log(`[Signaling] Sending Router RTP capabilities to client for session ${sessionId}`);
-          ws.send(JSON.stringify({
-            type: 'routerRtpCapabilities',
-            rtpCapabilities: router.rtpCapabilities
-          }));
-          break;
-        }
+  transport.on('control', async (type: string, data: any) => {
+    const pipeline = sessionPipelines.get(sessionId);
+    if (!pipeline || pipeline.ended) return;
 
-        case 'createWebRtcTransport': {
-          console.log(`[Signaling] Requesting server-side WebRtcTransport creation...`);
-          const listenIp = process.env.MEDIASOUP_LISTEN_IP || '127.0.0.1';
-          const announcedIp = process.env.MEDIASOUP_ANNOUNCED_IP || '127.0.0.1';
-          const transport = await router.createWebRtcTransport({
-            listenIps: [
-              { ip: listenIp, announcedIp: announcedIp }
-            ],
-            enableUdp: true,
-            enableTcp: true,
-            preferUdp: true
-          });
-
-          console.log(`[mediasoup] WebRtcTransport created successfully. ID: ${transport.id}`);
-          transports.set(transport.id, transport);
-
-          const pipeline = sessionPipelines.get(sessionId);
-          if (pipeline) {
-            pipeline.mediasoupTransports.add(transport.id);
-          }
-
-          // Listen for server-side ICE and DTLS state changes
-          transport.on('icestatechange', (iceState) => {
-            console.log(`[Server WebRtcTransport ICE State Change] ID: ${transport.id}, state: ${iceState}`);
-          });
-
-          transport.on('dtlsstatechange', (dtlsState) => {
-            console.log(`[Server WebRtcTransport DTLS State Change] ID: ${transport.id}, state: ${dtlsState}`);
-            if (dtlsState === 'failed' || dtlsState === 'closed') {
-              console.error(`[Server WebRtcTransport DTLS Failure] DTLS state is now ${dtlsState}`);
-            }
-          });
-
-          transport.on('iceselectedtuplechange', (iceSelectedTuple) => {
-            console.log(`[Server WebRtcTransport ICE Selected Tuple Change] ID: ${transport.id}, tuple:`, JSON.stringify(iceSelectedTuple));
-          });
-
-          ws.send(JSON.stringify({
-            type: 'webRtcTransportCreated',
-            id: transport.id,
-            iceParameters: transport.iceParameters,
-            iceCandidates: transport.iceCandidates,
-            dtlsParameters: transport.dtlsParameters
-          }));
-          break;
-        }
-
-        case 'connectWebRtcTransport': {
-          const { transportId, dtlsParameters } = data;
-          console.log(`[Signaling] Connecting server-side WebRtcTransport ${transportId} with DTLS parameters...`);
-          const transport = transports.get(transportId);
-          if (!transport) {
-            throw new Error(`Transport with id ${transportId} not found`);
-          }
-
-          await transport.connect({ dtlsParameters });
-          console.log(`[mediasoup] WebRtcTransport ${transportId} connected successfully.`);
-          ws.send(JSON.stringify({ type: 'webRtcTransportConnected' }));
-          break;
-        }
-
-        case 'produce': {
-          const { transportId, kind, rtpParameters } = data;
-          console.log(`[Signaling] Requesting production on WebRtcTransport ${transportId}, kind: ${kind}`);
-          const transport = transports.get(transportId);
-          if (!transport) {
-            throw new Error(`Transport with id ${transportId} not found`);
-          }
-
-          const producer = await transport.produce({ kind, rtpParameters });
-          console.log(`[mediasoup] New audio Producer created successfully. ID: ${producer.id}`);
-          producers.set(producer.id, producer);
-
-          const pipeline = sessionPipelines.get(sessionId);
-          if (pipeline) {
-            pipeline.mediasoupProducers.add(producer.id);
-          }
-
-          ws.send(JSON.stringify({
-            type: 'produced',
-            id: producer.id
-          }));
-
-          console.log(`[Signaling] Pipeline starting for session ${sessionId}...`);
-          startSttPipeline(producer, sessionId, ws);
-          break;
-        }
-
-        case 'webrtc_rtt': {
-          const { rttMs } = data;
-          const pipeline = sessionPipelines.get(sessionId);
-          if (pipeline) {
-            (pipeline as any).webrtcRttMs = rttMs;
-          }
-          break;
-        }
-
-        case 'chunk_played': {
-          const { chunkIndex } = data;
-          console.log(`[Signaling] Chunk ${chunkIndex} played successfully on client for session ${sessionId}`);
-          break;
-        }
-
-        case 'playback_error': {
-          const { chunkIndex, error } = data;
-          console.error(`[Signaling] Playback error on client for session ${sessionId}, chunk ${chunkIndex}: ${error}`);
-          prisma.sessionEvent.create({
-            data: {
-              sessionId,
-              eventType: 'playback_error',
-              metadata: { chunkIndex, error, timestamp: new Date().toISOString() }
-            }
-          }).catch((dbErr: any) => console.error('[Database Log Error] Failed to log playback error event:', dbErr));
-          break;
-        }
-
-        case 'interrupt': {
-          console.log(`[Signaling] Interruption request received for session ${sessionId}`);
-          cancelActiveTurn(sessionId);
-          await setSessionState(sessionId, 'listening');
-          await resetSilenceTimer(sessionId, ws);
-
-          // Log interruption event
-          prisma.sessionEvent.create({
-            data: {
-              sessionId,
-              eventType: 'interruption',
-              metadata: { timestamp: new Date().toISOString() }
-            }
-          }).catch((err: any) => console.error('[Database Log Error] Failed to log interruption event:', err));
-
-          // Clean up latency tracker on interruption
-          activeTurnLatencies.delete(sessionId);
-          break;
-        }
-
-        case 'playback_complete': {
-          console.log(`[Signaling] Playback complete event received for session ${sessionId}`);
-          await setSessionState(sessionId, 'listening');
-          await resetSilenceTimer(sessionId, ws);
-
-          // Log latency event
-          const latencies = activeTurnLatencies.get(sessionId);
-          if (latencies && latencies.firstTokenTime && latencies.firstAudioTime) {
-            const utteranceEndToFirstToken = latencies.firstTokenTime - latencies.turnStartTime;
-            const firstTokenToFirstAudio = latencies.firstAudioTime - latencies.firstTokenTime;
-            const totalTurn = Date.now() - latencies.turnStartTime;
-
-            // Retrieve STT duration recorded on pipeline
-            const pipeline = sessionPipelines.get(sessionId);
-            const sttDurationMs = (pipeline as any)?.lastSttDurationMs || 0;
-            const local_pipeline_ms = (pipeline as any)?.local_pipeline_ms || 0;
-            const deepgram_network_rtt_ms = (pipeline as any)?.deepgram_network_rtt_ms || 0;
-            const deepgram_processing_ms = (pipeline as any)?.deepgram_processing_ms || 0;
-            const interim_transcript_count = (pipeline as any)?.interim_transcript_count || 0;
-            const webrtc_rtt_ms = (pipeline as any)?.webrtcRttMs || null;
-
-            // Calculate average TTS chunk duration
-            const ttsChunkDurations = (latencies as any).ttsChunkDurations || [];
-            const avgTtsDurationMs = ttsChunkDurations.length > 0
-              ? Math.round(ttsChunkDurations.reduce((a: number, b: number) => a + b, 0) / ttsChunkDurations.length)
-              : 0;
-
-            const llmDurationMs = (latencies as any).llmDurationMs || 0;
-            const firstTokenMs = utteranceEndToFirstToken; // from turn start to first token
-
-            // Calculate LLM sub-components
-            const networkToOpenAiMs = (latencies as any).firstTokenTime && (latencies as any).llmStartTime
-              ? (latencies as any).firstTokenTime - (latencies as any).llmStartTime
-              : 0;
-            const generationMs = llmDurationMs > networkToOpenAiMs
-              ? llmDurationMs - networkToOpenAiMs
-              : 0;
-
-            // Calculate TTS sub-components
-            const ttsNetworkDurations = (latencies as any).ttsNetworkDurations || [];
-            const avgNetworkToDeepgramTtsMs = ttsNetworkDurations.length > 0
-              ? Math.round(ttsNetworkDurations.reduce((a: number, b: number) => a + b, 0) / ttsNetworkDurations.length)
-              : 0;
-
-            const ttsRelayDurations = (latencies as any).ttsRelayDurations || [];
-            const avgAudioRelayToClientMs = ttsRelayDurations.length > 0
-              ? Math.round(ttsRelayDurations.reduce((a: number, b: number) => a + b, 0) / ttsRelayDurations.length)
-              : 0;
-
-            const clientBufferToPlaybackMs = Number(data.clientMetrics?.clientBufferToPlaybackMs) || 0;
-
-            prisma.sessionEvent.create({
-              data: {
-                sessionId,
-                eventType: 'turn_latency',
-                metadata: {
-                  utteranceEndToFirstTokenMs: utteranceEndToFirstToken,
-                  firstTokenToFirstAudioMs: firstTokenToFirstAudio,
-                  totalTurnMs: totalTurn,
-                  
-                  // Component-based durations
-                  sttDurationMs,
-                  llmDurationMs,
-                  firstTokenMs,
-                  ttsDurationMs: avgTtsDurationMs,
-
-                  // Sub-component level latency metrics
-                  networkToOpenAiMs,
-                  generationMs,
-                  networkToDeepgramTtsMs: avgNetworkToDeepgramTtsMs,
-                  audioRelayToClientMs: avgAudioRelayToClientMs,
-                  clientBufferToPlaybackMs,
-                  
-                  // STT sub-components annotations/placeholders
-                  micToMediasoupMs: null,
-                  mediasoupToFfmpegMs: null,
-                  ffmpegTranscodeMs: null,
-                  deepgramNetworkAndEndpointingMs: sttDurationMs,
-
-                  // 5 lightweight sub-breakdown metrics
-                  deepgram_wait_ms: 1300,
-                  stt_network_and_compute_ms: Math.max(0, sttDurationMs - 1300),
-                  llm_network_ms: networkToOpenAiMs,
-                  llm_generation_ms: generationMs,
-                  tts_network_and_synthesis_ms: avgNetworkToDeepgramTtsMs,
-
-                  // STT sub-components breakdown details
-                  mediasoup_to_ffmpeg_ms: null,
-                  ffmpeg_transcode_ms: null,
-                  deepgram_network_and_compute_ms: Math.max(0, sttDurationMs - 1300),
-
-                  // Granular STT metrics
-                  local_pipeline_ms,
-                  deepgram_network_rtt_ms,
-                  deepgram_processing_ms,
-                  interim_transcript_count,
-                  webrtc_rtt_ms
-                }
-              }
-            }).catch((err: any) => console.error('[Database Log Error] Failed to log turn latency event:', err));
-
-            activeTurnLatencies.delete(sessionId);
-          }
-          break;
-        }
-
-        default:
-          console.warn('[Signaling] Unknown signaling type:', data.type);
+    switch (type) {
+      case 'unexpected_disconnect': {
+        console.warn(`[Signaling] Unexpected disconnect signaled for session ${sessionId}.`);
+        await updateSessionState(sessionId, {
+          callState: 'failed',
+          mediaState: 'failed',
+          errorCode: 'CALL_DISCONNECTED',
+          errorMessage: 'Call disconnected unexpectedly.'
+        });
+        await endSessionPipeline(sessionId);
+        break;
       }
-    } catch (err: any) {
-      console.error('[Signaling Error]', err);
-      ws.send(JSON.stringify({ type: 'error', message: err?.message || 'Internal signaling error' }));
+
+      case 'api_limitation': {
+        console.warn(`[MSG91 Standby mode engaged]`, data.message);
+        transport.sendTranscript('[MSG91 Transport Standby: Phone call is connected, but raw bidirectional audio streaming is currently unavailable due to provider API limitations.]', true);
+        break;
+      }
+
+      case 'webrtc_rtt': {
+        (pipeline as any).webrtcRttMs = data.rttMs;
+        break;
+      }
+
+      case 'chunk_played': {
+        console.log(`[Signaling] Chunk ${data.chunkIndex} played successfully on client for session ${sessionId}`);
+        break;
+      }
+
+      case 'playback_error': {
+        const { chunkIndex, error } = data;
+        console.error(`[Signaling] Playback error on client for session ${sessionId}, chunk ${chunkIndex}: ${error}`);
+        prisma.sessionEvent.create({
+          data: {
+            sessionId,
+            eventType: 'playback_error',
+            metadata: { chunkIndex, error, timestamp: new Date().toISOString() }
+          }
+        }).catch((dbErr: any) => console.error('[Database Log Error] Failed to log playback error event:', dbErr));
+        break;
+      }
+
+      case 'interrupt': {
+        console.log(`[Signaling] Interruption request received for session ${sessionId}`);
+        cancelActiveTurn(sessionId);
+        await setSessionState(sessionId, 'listening');
+        await updateSessionState(sessionId, { conversationState: 'listening' });
+        await resetSilenceTimer(sessionId, transport);
+
+        // Log interruption event
+        prisma.sessionEvent.create({
+          data: {
+            sessionId,
+            eventType: 'interruption',
+            metadata: { timestamp: new Date().toISOString() }
+          }
+        }).catch((err: any) => console.error('[Database Log Error] Failed to log interruption event:', err));
+
+        // Clean up latency tracker on interruption
+        activeTurnLatencies.delete(sessionId);
+        break;
+      }
+
+      case 'playback_complete': {
+        console.log(`[Signaling] Playback complete event received for session ${sessionId}`);
+        await setSessionState(sessionId, 'listening');
+        await updateSessionState(sessionId, { conversationState: 'listening' });
+        await resetSilenceTimer(sessionId, transport);
+
+        // Log latency event
+        const latencies = activeTurnLatencies.get(sessionId);
+        if (latencies && latencies.firstTokenTime && latencies.firstAudioTime) {
+          const utteranceEndToFirstToken = latencies.firstTokenTime - latencies.turnStartTime;
+          const firstTokenToFirstAudio = latencies.firstAudioTime - latencies.firstTokenTime;
+          const totalTurn = Date.now() - latencies.turnStartTime;
+
+          // Retrieve STT duration recorded on pipeline
+          const sttDurationMs = (pipeline as any)?.lastSttDurationMs || 0;
+          const local_pipeline_ms = (pipeline as any)?.local_pipeline_ms || 0;
+          const deepgram_network_rtt_ms = (pipeline as any)?.deepgram_network_rtt_ms || 0;
+          const deepgram_processing_ms = (pipeline as any)?.deepgram_processing_ms || 0;
+          const interim_transcript_count = (pipeline as any)?.interim_transcript_count || 0;
+          const webrtc_rtt_ms = (pipeline as any)?.webrtcRttMs || null;
+
+          // Calculate average TTS chunk duration
+          const ttsChunkDurations = (latencies as any).ttsChunkDurations || [];
+          const avgTtsDurationMs = ttsChunkDurations.length > 0
+            ? Math.round(ttsChunkDurations.reduce((a: number, b: number) => a + b, 0) / ttsChunkDurations.length)
+            : 0;
+
+          const llmDurationMs = (latencies as any).llmDurationMs || 0;
+          const firstTokenMs = utteranceEndToFirstToken; // from turn start to first token
+
+          // Calculate LLM sub-components
+          const networkToOpenAiMs = (latencies as any).firstTokenTime && (latencies as any).llmStartTime
+            ? (latencies as any).firstTokenTime - (latencies as any).llmStartTime
+            : 0;
+          const generationMs = llmDurationMs > networkToOpenAiMs
+            ? llmDurationMs - networkToOpenAiMs
+            : 0;
+
+          // Calculate TTS sub-components
+          const ttsNetworkDurations = (latencies as any).ttsNetworkDurations || [];
+          const avgNetworkToDeepgramTtsMs = ttsNetworkDurations.length > 0
+            ? Math.round(ttsNetworkDurations.reduce((a: number, b: number) => a + b, 0) / ttsNetworkDurations.length)
+            : 0;
+
+          const ttsRelayDurations = (latencies as any).ttsRelayDurations || [];
+          const avgAudioRelayToClientMs = ttsRelayDurations.length > 0
+            ? Math.round(ttsRelayDurations.reduce((a: number, b: number) => a + b, 0) / ttsRelayDurations.length)
+            : 0;
+
+          const clientBufferToPlaybackMs = Number(data.clientMetrics?.clientBufferToPlaybackMs) || 0;
+
+          prisma.sessionEvent.create({
+            data: {
+              sessionId,
+              eventType: 'turn_latency',
+              metadata: {
+                utteranceEndToFirstTokenMs: utteranceEndToFirstToken,
+                firstTokenToFirstAudioMs: firstTokenToFirstAudio,
+                totalTurnMs: totalTurn,
+                
+                // Component-based durations
+                sttDurationMs,
+                llmDurationMs,
+                firstTokenMs,
+                ttsDurationMs: avgTtsDurationMs,
+
+                // Sub-component level latency metrics
+                networkToOpenAiMs,
+                generationMs,
+                networkToDeepgramTtsMs: avgNetworkToDeepgramTtsMs,
+                audioRelayToClientMs: avgAudioRelayToClientMs,
+                clientBufferToPlaybackMs,
+                
+                // STT sub-components annotations/placeholders
+                micToMediasoupMs: null,
+                mediasoupToFfmpegMs: null,
+                ffmpegTranscodeMs: null,
+                deepgramNetworkAndEndpointingMs: sttDurationMs,
+
+                // 5 lightweight sub-breakdown metrics
+                deepgram_wait_ms: 1300,
+                stt_network_and_compute_ms: Math.max(0, sttDurationMs - 1300),
+                llm_network_ms: networkToOpenAiMs,
+                llm_generation_ms: generationMs,
+                tts_network_and_synthesis_ms: avgNetworkToDeepgramTtsMs,
+
+                // STT sub-components breakdown details
+                mediasoup_to_ffmpeg_ms: null,
+                ffmpeg_transcode_ms: null,
+                deepgram_network_and_compute_ms: Math.max(0, sttDurationMs - 1300),
+
+                // Granular STT metrics
+                local_pipeline_ms,
+                deepgram_network_rtt_ms,
+                deepgram_processing_ms,
+                interim_transcript_count,
+                webrtc_rtt_ms
+              }
+            }
+          }).catch((err: any) => console.error('[Database Log Error] Failed to log turn latency event:', err));
+
+          activeTurnLatencies.delete(sessionId);
+        }
+        break;
+      }
+
+      case 'close': {
+        await endSessionPipeline(sessionId);
+        break;
+      }
     }
   });
 
-  ws.on('close', () => {
-    console.log(`[WebSocket Close] Session ID: ${sessionId}`);
-    endSessionPipeline(sessionId, ws);
-  });
+  // Start the transport layer connections
+  try {
+    await transport.connect();
+    
+    if (transport.type === 'webrtc') {
+      await updateSessionState(sessionId, {
+        callState: 'connected',
+        mediaState: 'connected',
+        conversationState: 'greeting'
+      });
+    }
+    
+    // Start Deepgram Voice Engine speech recognition
+    await startSttPipeline(transport, sessionId);
+  } catch (err: any) {
+    console.error('[Signaling Start Error]', err);
+    transport.sendError(err?.message || 'Failed to initialize session signaling');
+    
+    await updateSessionState(sessionId, {
+      callState: 'failed',
+      mediaState: 'failed',
+      errorCode: 'MEDIA_CONNECTION_FAILED',
+      errorMessage: err?.message || 'Failed to initialize session signaling'
+    });
+
+    await endSessionPipeline(sessionId);
+  }
 }
 
-async function startSttPipeline(producer: any, sessionId: string, clientWs: WebSocket) {
-  let ffmpegProcess: any = null;
+async function startSttPipeline(transport: BaseTransport, sessionId: string) {
   let deepgramWs: WebSocket | null = null;
-  let plainTransport: any = null;
-  let consumer: any = null;
-  
-  const sdpPath = path.join(os.tmpdir(), `session-${sessionId}-${Date.now()}.sdp`);
-
-  // Register cleanup on socket drop via unified endSessionPipeline
-  clientWs.on('close', () => endSessionPipeline(sessionId, clientWs));
-  clientWs.on('error', () => endSessionPipeline(sessionId, clientWs));
 
   try {
-    // 1. Allocate dynamic port
-    const ffmpegPort = await findFreeUdpPort();
-    console.log(`[Pipeline] Allocated UDP port ${ffmpegPort} for FFmpeg transcode.`);
-
-    // 2. Create PlainTransport
-    const router = getRouter();
-    console.log(`[Pipeline] Creating PlainTransport...`);
-    plainTransport = await router.createPlainTransport({
-      listenIp: '127.0.0.1',
-      rtcpMux: true,
-      comedia: false
-    });
-
-    console.log(`[mediasoup] PlainTransport created. ID: ${plainTransport.id}, localPort: ${plainTransport.tuple.localPort}`);
-
-    const pipeline = sessionPipelines.get(sessionId);
-    if (pipeline) {
-      pipeline.plainTransport = plainTransport;
-      pipeline.sdpPath = sdpPath;
-    }
-
-    // 3. Connect to FFmpeg destination port
-    console.log(`[Pipeline] Connecting PlainTransport to destination 127.0.0.1:${ffmpegPort}...`);
-    await plainTransport.connect({
-      ip: '127.0.0.1',
-      port: ffmpegPort
-    });
-    console.log(`[mediasoup] PlainTransport connected successfully to destination.`);
-
-    // 4. Create Consumer for Opus audio stream
-    console.log(`[Pipeline] Consuming audio producer ${producer.id} on PlainTransport...`);
-    consumer = await plainTransport.consume({
-      producerId: producer.id,
-      rtpCapabilities: router.rtpCapabilities
-    });
-    console.log(`[mediasoup] Consumer created. ID: ${consumer.id}, type: ${consumer.type}, rtpParameters:`, JSON.stringify(consumer.rtpParameters));
-    await consumer.resume();
-    console.log(`[mediasoup] Consumer resumed successfully.`);
-
-    if (pipeline) {
-      pipeline.consumer = consumer;
-    }
-
-    // 5. Write SDP description file for FFmpeg to consume Opus RTP stream
-    const payloadType = consumer.rtpParameters.codecs[0].payloadType;
-    const sdpContent = `v=0
-o=- 0 0 IN IP4 127.0.0.1
-s=Mediasoup RTP Stream
-c=IN IP4 127.0.0.1
-t=0 0
-m=audio ${ffmpegPort} RTP/AVP ${payloadType}
-a=rtpmap:${payloadType} opus/48000/2
-a=rtcp-mux
-`;
-    console.log(`[Pipeline] Writing SDP configuration file to: ${sdpPath}`);
-    console.log(`[Pipeline] SDP content:\n${sdpContent}`);
-    fs.writeFileSync(sdpPath, sdpContent);
-
-    // 6. Retrieve decrypted Deepgram API Key
+    // 1. Retrieve decrypted Deepgram API Key
     console.log(`[Pipeline] Retrieving Deepgram credential for user ${DEFAULT_USER_ID}...`);
     const credential = await prisma.apiCredential.findFirst({
       where: { userId: DEFAULT_USER_ID, provider: 'deepgram' }
@@ -830,11 +614,10 @@ a=rtcp-mux
     }
 
     const apiKey = decrypt(credential.encryptedKey);
-    console.log(`[Pipeline] Successfully decrypted Deepgram API Key (starts with: ${apiKey.substring(0, 4)}...).`);
 
-    // 7. Establish Deepgram live transcription WebSocket connection
+    // 2. Establish Deepgram live transcription WebSocket connection
     const deepgramHost = process.env.DEEPGRAM_MOCK_URL || 'wss://api.deepgram.com';
-    const deepgramUrl = `${deepgramHost}/v1/listen?encoding=linear16&sample_rate=16000&channels=1&interim_results=true&utterance_end_ms=1000&endpointing=300&vad_events=true`;
+    const deepgramUrl = `${deepgramHost}/v1/listen?model=nova-2&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&utterance_end_ms=2000&endpointing=500&vad_events=true`;
     console.log(`[Deepgram Connection] Connecting to WebSocket URL: ${deepgramUrl}`);
     deepgramWs = new WebSocket(deepgramUrl, {
       headers: {
@@ -845,62 +628,13 @@ a=rtcp-mux
     deepgramWs.on('open', async () => {
       console.log('[Deepgram Connection] WebSocket connection successfully opened with Deepgram.');
       await setNudgeCount(sessionId, 0);
-      await resetSilenceTimer(sessionId, clientWs);
+      await resetSilenceTimer(sessionId, transport);
 
       const pl = sessionPipelines.get(sessionId);
       if (pl) {
         pl.deepgramWs = deepgramWs;
         (pl as any).deepgramOpenTime = Date.now();
       }
-
-      // Verify that ffmpeg exists (fails loudly check)
-      if (!ffmpegPath) {
-        throw new Error('FFmpeg path is not defined. ffmpeg-static could not load properly.');
-      }
-
-      // 8. Spawn FFmpeg child process to transcode Opus RTP packets to raw 16kHz PCM
-      const ffmpegArgs = [
-        '-protocol_whitelist', 'file,rtp,udp',
-        '-i', sdpPath,
-        '-f', 's16le',
-        '-acodec', 'pcm_s16le',
-        '-ac', '1',
-        '-ar', '16000',
-        'pipe:1'
-      ];
-      console.log(`[FFmpeg Spawn] Spawning FFmpeg binary at: ${ffmpegPath}`);
-      console.log(`[FFmpeg Spawn] Arguments: ${ffmpegArgs.join(' ')}`);
-
-      ffmpegProcess = spawn(ffmpegPath, ffmpegArgs);
-      if (pl) {
-        pl.ffmpegProcess = ffmpegProcess;
-      }
-
-      ffmpegProcess.stdout.on('data', (chunk: Buffer) => {
-        // Log brief status of incoming PCM packets occasionally to avoid flooding console, but verify bytes flow
-        if (Math.random() < 0.05) {
-          console.log(`[FFmpeg output] Transcoded PCM chunk: ${chunk.length} bytes.`);
-        }
-        if (deepgramWs && deepgramWs.readyState === WebSocket.OPEN) {
-          deepgramWs.send(chunk);
-          const currentPipeline = sessionPipelines.get(sessionId);
-          if (currentPipeline) {
-            currentPipeline.totalBytesSent = (currentPipeline.totalBytesSent || 0) + chunk.length;
-            const streamTime = currentPipeline.totalBytesSent / 32000;
-            currentPipeline.chunksLog = currentPipeline.chunksLog || [];
-            currentPipeline.chunksLog.push({ streamTime, sentTime: Date.now() });
-          }
-        }
-      });
-
-      ffmpegProcess.stderr.on('data', (data: Buffer) => {
-        // Output all ffmpeg logging in real-time
-        console.log(`[FFmpeg Stderr] ${data.toString().trim()}`);
-      });
-
-      ffmpegProcess.on('close', (code: number) => {
-        console.log(`[FFmpeg process] Finished with exit code ${code}`);
-      });
     });
 
     let lastWordEndTimeInStream = 0;
@@ -911,7 +645,6 @@ a=rtcp-mux
         console.log(`[Deepgram Message] Session ${sessionId} has been terminated. Ignoring transcript event.`);
         return;
       }
-      console.log(`[Deepgram Raw Message Received]:`, messageData.toString());
       try {
         const response = JSON.parse(messageData.toString());
         const pipeline = sessionPipelines.get(sessionId);
@@ -943,12 +676,8 @@ a=rtcp-mux
           if (transcript.trim()) {
             console.log(`[Deepgram Final Transcript]: ${transcript}`);
             
-            // Relay final transcript to client
-            clientWs.send(JSON.stringify({
-              type: 'transcript',
-              isFinal: true,
-              text: transcript
-            }));
+            // Relay final transcript to transport
+            transport.sendTranscript(transcript, true);
 
             // Accumulate speech in Redis
             const currentSpeech = await getSessionSpeech(sessionId);
@@ -961,12 +690,8 @@ a=rtcp-mux
             if (pipeline) {
               pipeline.interimTranscriptCount = (pipeline.interimTranscriptCount || 0) + 1;
             }
-            // Relay interim transcript to client
-            clientWs.send(JSON.stringify({
-              type: 'transcript',
-              isFinal: false,
-              text: transcript
-            }));
+            // Relay interim transcript to transport
+            transport.sendTranscript(transcript, false);
           }
         }
 
@@ -1040,8 +765,7 @@ a=rtcp-mux
 
             console.log(`[STT Granular Metrics] local_pipeline_ms=${local_pipeline_ms}ms, deepgram_network_rtt_ms=${deepgram_network_rtt_ms}ms, deepgram_processing_ms=${deepgram_processing_ms}ms, interim_transcript_count=${pipeline.interimTranscriptCount}`);
 
-            // Prune logs to control memory growth instead of clearing them,
-            // and preserve totalBytesSent to maintain timeline synchronization.
+            // Prune logs to control memory growth
             pipeline.chunksLog = (pipeline.chunksLog || []).slice(-500);
             pipeline.responsesLog = (pipeline.responsesLog || []).slice(-500);
             pipeline.interimTranscriptCount = 0;
@@ -1050,14 +774,52 @@ a=rtcp-mux
           console.log(`[STT Latency] Calculated stt_duration_ms: ${sttDuration}ms`);
           
           const fullSpeech = await getSessionSpeech(sessionId);
+          
+          if (transport.type === 'msg91') {
+            const callbackRes = detectCallbackRequest(fullSpeech);
+            if (callbackRes.isCallback) {
+              console.log(`[Call Reschedule] Callback request detected in transcript: "${fullSpeech}"`);
+              
+              const sess = await prisma.session.findUnique({ where: { id: sessionId } });
+
+              await prisma.session.update({
+                where: { id: sessionId },
+                data: {
+                  status: 'callback_requested',
+                  endedAt: new Date()
+                }
+              });
+
+              const callbackTime = callbackRes.requestedMinutes 
+                ? new Date(Date.now() + callbackRes.requestedMinutes * 60 * 1000) 
+                : null;
+
+              await prisma.sessionEvent.create({
+                data: {
+                  sessionId,
+                  eventType: 'callback_requested',
+                  metadata: {
+                    originalSessionId: sessionId,
+                    phoneNumber: sess?.phoneNumber,
+                    requestedTime: callbackTime ? callbackTime.toISOString() : null,
+                    requestedTimeText: callbackRes.requestedTimeText,
+                    reason: fullSpeech,
+                    timestamp: new Date().toISOString()
+                  }
+                }
+              });
+
+              transport.sendTranscript('[Callback Requested - Conversation Rescheduled]', true);
+              await deleteSessionSpeech(sessionId);
+              await endSessionPipeline(sessionId);
+              return;
+            }
+          }
+
           if (isTrivialUtterance(fullSpeech)) {
             console.log(`[Speech Guard] Ignoring trivial/filler utterance: "${fullSpeech}". Continuing to listen.`);
-            // Send utteranceEnd event to client so they know we processed it but kept listening
-            clientWs.send(JSON.stringify({
-              type: 'utteranceEnd'
-            }));
-            // Restart silence timer since we didn't trigger an LLM turn
-            await resetSilenceTimer(sessionId, clientWs);
+            transport.sendUtteranceEnd();
+            await resetSilenceTimer(sessionId, transport);
           } else {
             console.log(`[Speech Guard] Non-trivial utterance detected: "${fullSpeech}". Triggering LLM turn.`);
             
@@ -1079,13 +841,11 @@ a=rtcp-mux
             // Clear the speech map in Redis
             await deleteSessionSpeech(sessionId);
 
-            // Notify client of utteranceEnd
-            clientWs.send(JSON.stringify({
-              type: 'utteranceEnd'
-            }));
+            // Notify transport of utteranceEnd
+            transport.sendUtteranceEnd();
             
             console.log(`[Pipeline] Triggering LLM turn for session ${sessionId}...`);
-            triggerLlmTurn(sessionId, clientWs);
+            triggerLlmTurn(sessionId, transport);
           }
           // Reset lastWordEndTimeInStream for the next turn
           lastWordEndTimeInStream = 0;
@@ -1130,12 +890,10 @@ a=rtcp-mux
 
   } catch (error: any) {
     console.error('[Pipeline Execution Failure]', error);
-    clientWs.send(JSON.stringify({ type: 'error', message: error?.message || 'Failed to start STT pipeline' }));
+    transport.sendError(error?.message || 'Failed to start STT pipeline');
     endSessionPipeline(sessionId);
   }
 }
-
-
 
 export function cancelActiveTurn(sessionId: string) {
   const context = activeSessions.get(sessionId);
@@ -1227,7 +985,7 @@ class TtsQueueWorker {
     private sessionId: string,
     private voice: string,
     private apiKey: string,
-    private clientWs: WebSocket
+    private transport: BaseTransport
   ) {}
 
   push(sentence: string) {
@@ -1251,14 +1009,12 @@ class TtsQueueWorker {
 
     if (this.queue.length === 0) {
       if (this.streamFinished) {
-        console.log(`[TTS Worker] Queue empty and stream finished. Cleaning up worker. Sending tts_done to client.`);
+        console.log(`[TTS Worker] Queue empty and stream finished. Cleaning up worker. Sending tts_done to transport.`);
         activeSessions.delete(this.sessionId);
-        if (this.clientWs.readyState === WebSocket.OPEN) {
-          this.clientWs.send(JSON.stringify({ 
-            type: 'tts_done',
-            totalChunks: this.chunkCount
-          }));
-        }
+        await this.transport.sendTtsDone(this.chunkCount);
+        await setSessionState(this.sessionId, 'listening');
+        await updateSessionState(this.sessionId, { conversationState: 'listening' });
+        await resetSilenceTimer(this.sessionId, this.transport);
       }
       return;
     }
@@ -1285,13 +1041,12 @@ class TtsQueueWorker {
 
       if (!this.cancelled) {
         this.chunkCount++;
-        console.log(`[TTS Worker] Audio chunk generated (${audioBuffer.length} bytes). Sending chunk ${this.chunkCount} to client.`);
+        console.log(`[TTS Worker] Audio chunk generated (${audioBuffer.length} bytes). Sending chunk ${this.chunkCount} to transport.`);
         const relayStart = Date.now();
-        this.clientWs.send(JSON.stringify({
-          type: 'audio_chunk',
-          audio: audioBuffer.toString('base64'),
-          chunkIndex: this.chunkCount
-        }));
+        
+        // Deliver audio chunk directly to the transport
+        await this.transport.sendAudioChunk(audioBuffer, this.chunkCount);
+        
         const relayMs = Date.now() - relayStart;
 
         if (latencies) {
@@ -1310,7 +1065,7 @@ class TtsQueueWorker {
   }
 }
 
-async function triggerLlmTurn(sessionId: string, clientWs: WebSocket, isSilenceNudge = false) {
+async function triggerLlmTurn(sessionId: string, transport: BaseTransport, isSilenceNudge = false) {
   if (!sessionPipelines.has(sessionId)) {
     console.log(`[triggerLlmTurn] Session ${sessionId} is not active. Aborting turn.`);
     return;
@@ -1325,6 +1080,7 @@ async function triggerLlmTurn(sessionId: string, clientWs: WebSocket, isSilenceN
 
   // Transition to thinking state and stop silence timer
   await setSessionState(sessionId, 'thinking');
+  await updateSessionState(sessionId, { conversationState: 'processing' });
   stopSilenceTimer(sessionId);
 
   try {
@@ -1374,6 +1130,7 @@ async function triggerLlmTurn(sessionId: string, clientWs: WebSocket, isSilenceN
       }
       contextBlock += '---\n\nUse the above context only where relevant to the instructions above.';
       systemPrompt += contextBlock;
+      systemPrompt += contextBlock;
     }
 
     // 3. Load conversation history from Redis (or fallback to DB)
@@ -1404,7 +1161,7 @@ async function triggerLlmTurn(sessionId: string, clientWs: WebSocket, isSilenceN
 
     const abortController = new AbortController();
     const voicePreference = agentConfig.voicePreference || 'aura-asteria-en';
-    const ttsWorker = new TtsQueueWorker(sessionId, voicePreference, deepgramKey, clientWs);
+    const ttsWorker = new TtsQueueWorker(sessionId, voicePreference, deepgramKey, transport);
     activeSessions.set(sessionId, { abortController, ttsWorker });
 
     // 6. Construct OpenAI payload messages
@@ -1480,10 +1237,8 @@ async function triggerLlmTurn(sessionId: string, clientWs: WebSocket, isSilenceN
     let sentenceBuffer = '';
     let fullResponse = '';
 
-    // Notify client that LLM started responding
-    clientWs.send(JSON.stringify({
-      type: 'llm_start'
-    }));
+    // Notify transport that LLM started responding
+    transport.sendLlmStart();
     await setSessionState(sessionId, 'speaking');
     stopSilenceTimer(sessionId);
 
@@ -1531,11 +1286,8 @@ async function triggerLlmTurn(sessionId: string, clientWs: WebSocket, isSilenceN
               fullResponse += content;
               sentenceBuffer += content;
 
-              // Relay tokens to client over WebSocket
-              clientWs.send(JSON.stringify({
-                type: 'llm_chunk',
-                text: content
-              }));
+              // Relay tokens to client via transport
+              transport.sendLlmChunk(content);
 
               // Check for sentence boundaries: match punctuation followed by whitespace or end of stream
               let boundaryIndex = -1;
@@ -1592,18 +1344,21 @@ async function triggerLlmTurn(sessionId: string, clientWs: WebSocket, isSilenceN
     console.log(`[LLM Turn] Assistant response saved to DB (${fullResponse.length} chars).`);
     await appendSessionHistory(sessionId, { role: 'assistant', content: fullResponse });
 
-    // Notify client LLM turn is complete
-    clientWs.send(JSON.stringify({
-      type: 'llm_done',
-      fullText: fullResponse
-    }));
+    // Notify transport LLM turn is complete
+    transport.sendLlmDone(fullResponse);
 
   } catch (error: any) {
     if (error.name === 'AbortError') {
       console.log(`[LLM Turn Aborted] OpenAI request aborted for session: ${sessionId}`);
     } else {
       console.error('[LLM Turn Error]', error);
-      clientWs.send(JSON.stringify({ type: 'error', message: `LLM Error: ${error?.message || 'Internal OpenAI completion failure'}` }));
+      transport.sendError(`LLM Error: ${error?.message || 'Internal OpenAI completion failure'}`);
+      
+      await updateSessionState(sessionId, {
+        conversationState: 'idle',
+        errorCode: 'LLM_ERROR',
+        errorMessage: error?.message || 'Internal OpenAI completion failure'
+      });
 
       if (!error.message.includes('OpenAI API error:')) {
         prisma.sessionEvent.create({
@@ -1623,9 +1378,8 @@ async function triggerLlmTurn(sessionId: string, clientWs: WebSocket, isSilenceN
     const state = await getSessionState(sessionId);
     if (state === 'thinking') {
       await setSessionState(sessionId, 'listening');
-      if (clientWs.readyState === WebSocket.OPEN) {
-        await resetSilenceTimer(sessionId, clientWs);
-      }
+      await updateSessionState(sessionId, { conversationState: 'listening' });
+      await resetSilenceTimer(sessionId, transport);
     }
   }
 }

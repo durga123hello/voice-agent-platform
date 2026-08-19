@@ -10,8 +10,10 @@ import prisma from './db/client';
 import bcrypt from 'bcryptjs';
 import ffmpegPath from 'ffmpeg-static';
 import { initMediasoup } from './services/mediasoup';
-import { handleSignaling } from './services/signaling';
+import { handleSignaling, sessionPipelines } from './services/signaling';
 import { handleTelephony } from './services/telephony/orchestrator';
+import { MSG91Transport } from './services/transports/MSG91Transport';
+import { startZombieReaper } from './services/transports/lifecycle';
 import redis from './db/redis';
 import Redis from 'ioredis';
 
@@ -43,94 +45,76 @@ function verifyFfmpegLoudCheck(): string {
         process.exit(1);
       }
     } else {
-      console.error('CRITICAL: FFmpeg is not found on the system PATH, and the local static binary is not available.');
+      console.error('CRITICAL: FFmpeg is not installed on system PATH and ffmpeg-static could not load.');
       process.exit(1);
     }
   }
-
   return resolvedPath;
 }
 
+/**
+ * Verify default Seed User database records for local development.
+ */
 async function seedDefaultUser() {
   try {
-    // Ensure default tenant exists
-    let tenant = await prisma.tenant.findUnique({
-      where: { id: DEFAULT_TENANT_ID }
-    });
-    if (!tenant) {
-      tenant = await prisma.tenant.create({
-        data: {
-          id: DEFAULT_TENANT_ID,
-          name: 'Default Tenant'
-        }
-      });
-      console.log('Seeded default tenant:', DEFAULT_TENANT_ID);
-    }
-
     const existing = await prisma.user.findUnique({
       where: { id: DEFAULT_USER_ID }
     });
 
     if (!existing) {
-      const passwordHash = await bcrypt.hash('defaultpassword', 10);
-      await prisma.user.create({
+      const hashed = await bcrypt.hash('secret-password', 10);
+      
+      const user = await prisma.user.create({
         data: {
           id: DEFAULT_USER_ID,
-          email: 'default@voiceplatform.com',
-          passwordHash: passwordHash,
-          tenantId: DEFAULT_TENANT_ID
+          email: 'support@swarmx.ai',
+          passwordHash: hashed,
+          tenant: {
+            create: {
+              id: DEFAULT_TENANT_ID,
+              name: 'Developer Workspace Tenant',
+              contactEmail: 'support@swarmx.ai',
+              emailVerified: true
+            }
+          }
         }
       });
-      console.log('Seeded default user:', DEFAULT_USER_ID);
+      console.log(`Successfully seeded default user ${user.email} (Tenant ID: ${DEFAULT_TENANT_ID})`);
     } else {
       console.log('Default user already exists.');
     }
-  } catch (error) {
-    console.error('Error seeding default user:', error);
-    process.exit(1);
+  } catch (err) {
+    console.error('Error during database seed checklist:', err);
   }
 }
 
 async function startServer() {
   console.log('Starting backend server initialization...');
-
-  // 1. Loud startup check for FFmpeg
+  
+  // 1. Verify FFmpeg
   verifyFfmpegLoudCheck();
 
-  // 2. Initialize Mediasoup worker and router
+  // 2. Initialize Mediasoup Worker
   try {
     await initMediasoup();
+    console.log('Mediasoup Worker and Router initialized successfully.');
   } catch (err) {
-    console.error('CRITICAL: Failed to initialize Mediasoup. Exiting...', err);
+    console.error('CRITICAL: Mediasoup initialization failed. Exiting...', err);
     process.exit(1);
   }
 
-  // 3. Connect to database
+  // 3. Verify Redis connection on boot
   try {
-    await prisma.$connect();
-    console.log('Successfully connected to PostgreSQL database.');
-  } catch (error) {
-    console.error('Failed to connect to the database:', error);
-    process.exit(1);
-  }
-
-  // 3b. Connect to Redis
-  try {
-    const redisUrl = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
-    if (redisUrl === 'memory') {
-      console.log('Using in-memory Redis store for session state.');
-    } else {
-      console.log(`Connecting to Redis at: ${redisUrl}`);
-      // Create a temporary client with 0 retries and a short timeout to check connection
-      const tempRedis = new Redis(redisUrl, {
-        connectTimeout: 1500,
-        maxRetriesPerRequest: 0,
-        retryStrategy: () => null
+    if (process.env.REDIS_URL !== 'memory') {
+      const client = new Redis(process.env.REDIS_URL || 'redis://localhost:6379', {
+        maxRetriesPerRequest: 1,
+        connectTimeout: 2000
       });
-      tempRedis.on('error', () => {}); // silence temp error
-      await tempRedis.ping();
-      tempRedis.disconnect();
+      await client.ping();
+      client.disconnect();
       console.log('Successfully connected to Redis.');
+    } else {
+      console.log('Redis is configured to run in MEMORY mode.');
     }
   } catch (error) {
     if (process.env.NODE_ENV !== 'production') {
@@ -147,19 +131,22 @@ async function startServer() {
   // 5. Create HTTP Server around Express app
   const server = http.createServer(app);
 
-  // 6. Set up WebSocket server for signaling path upgrade
+  // 6. Set up WebSocket servers for signaling, telephony, and MSG91 media streams
   const wss = new WebSocketServer({ noServer: true });
+  const wssMsg91 = new WebSocketServer({ noServer: true });
 
   server.on('upgrade', (request, socket, head) => {
     const url = request.url || '';
     console.log(`[WS Upgrade Request] Path: ${url}`);
-    const match = url.match(/^\/ws\/sessions\/([a-zA-Z0-9-]+)/);
-    const matchTelephony = url.match(/^\/ws\/telephony\/([a-zA-Z0-9-]+)\/([a-zA-Z0-9-]+)/);
     
-    if (match) {
-      console.log(`[WS Upgrade Match] Signaling WebRTC session matched. Session ID: ${match[1]}`);
+    const sessionMatch = url.match(/^\/ws\/sessions\/([a-zA-Z0-9-]+)/);
+    const msg91Match = url.match(/^\/ws\/msg91\/media\/([a-zA-Z0-9-]+)/);
+    const matchTelephony = url.match(/^\/ws\/telephony\/([a-zA-Z0-9-]+)\/([a-zA-Z0-9-]+)/);
+
+    if (sessionMatch) {
+      console.log(`[WS Upgrade Match] Signaling WebRTC session matched. Session ID: ${sessionMatch[1]}`);
       wss.handleUpgrade(request, socket, head, (ws) => {
-        const sessionId = match[1];
+        const sessionId = sessionMatch[1];
         wss.emit('connection', ws, request, sessionId);
       });
     } else if (matchTelephony) {
@@ -168,6 +155,12 @@ async function startServer() {
         const provider = matchTelephony[1];
         const sessionId = matchTelephony[2];
         wss.emit('telephony_connection', ws, provider, sessionId);
+      });
+    } else if (msg91Match) {
+      console.log(`[WS Upgrade Match] MSG91 media stream matched. Session ID: ${msg91Match[1]}`);
+      wssMsg91.handleUpgrade(request, socket, head, (ws) => {
+        const sessionId = msg91Match[1];
+        wssMsg91.emit('connection', ws, request, sessionId);
       });
     } else {
       console.log(`[WS Upgrade Rejection] Path ${url} did not match any routes. Destroying socket.`);
@@ -183,7 +176,20 @@ async function startServer() {
     handleTelephony(ws, provider, sessionId);
   });
 
+  wssMsg91.on('connection', (ws: any, request: any, sessionId: any) => {
+    console.log(`[WebSocket Upgrade] Received MSG91 media stream connection for session ${sessionId}`);
+    const pipeline = sessionPipelines.get(sessionId);
+    if (pipeline && pipeline.transport && pipeline.transport.type === 'msg91') {
+      (pipeline.transport as MSG91Transport).handleMediaStream(ws);
+    } else {
+      console.warn(`[WebSocket Error] No active MSG91 transport found for session ${sessionId}. Closing socket.`);
+      ws.close();
+    }
+  });
+
   // 7. Start listening
+  startZombieReaper();
+
   server.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
   });

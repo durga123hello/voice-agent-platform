@@ -13,6 +13,7 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
+  const [debugOtp, setDebugOtp] = useState<string | null>(null);
 
   const handleRequestOtp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,10 +36,10 @@ export default function LoginPage() {
       setMessage(data.message || "OTP code sent to email.");
       setStep("otp");
 
-      // Auto-populate for test validation convenience if debugCode exists
+      // Store debugCode in state instead of auto-populating
       if (data.debugCode) {
         console.log("Local debug OTP code detected:", data.debugCode);
-        setOtp(data.debugCode);
+        setDebugOtp(data.debugCode);
       }
     } catch (err: any) {
       setError(err.message);
@@ -197,6 +198,50 @@ export default function LoginPage() {
         )}
 
       </div>
+
+      {debugOtp && (
+        <div style={{
+          position: "fixed",
+          top: "20px",
+          left: "50%",
+          transform: "translateX(-50%)",
+          backgroundColor: "#161b22",
+          border: "1.5px solid #58a6ff",
+          borderRadius: "8px",
+          padding: "14px 24px",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
+          zIndex: 1000,
+          display: "flex",
+          alignItems: "center",
+          gap: "16px",
+          fontFamily: "var(--font-sans, sans-serif)",
+          animation: "fadeInDown 0.3s ease-out"
+        }}>
+          <span style={{ fontSize: "18px" }}>🔑</span>
+          <div style={{ fontSize: "14px", color: "#ffffff", fontWeight: "500" }}>
+            [Dev Mode] Verification OTP: <strong style={{ color: "#58a6ff", fontSize: "18px", letterSpacing: "2px", marginLeft: "4px" }}>{debugOtp}</strong>
+          </div>
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(debugOtp);
+              alert("OTP copied to clipboard!");
+            }}
+            style={{
+              backgroundColor: "#21262d",
+              border: "1px solid var(--border-color)",
+              color: "#58a6ff",
+              borderRadius: "6px",
+              padding: "6px 12px",
+              fontSize: "12px",
+              fontWeight: "600",
+              cursor: "pointer",
+              transition: "all 0.2s"
+            }}
+          >
+            Copy
+          </button>
+        </div>
+      )}
     </div>
   );
 }

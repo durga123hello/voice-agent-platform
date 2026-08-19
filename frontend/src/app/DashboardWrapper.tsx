@@ -28,8 +28,8 @@ export default function DashboardWrapper({ children }: { children: React.ReactNo
     } else {
       setToken(savedToken);
       setOrgName(savedOrgName);
-      setLoading(false);
     }
+    setLoading(false);
   }, [pathname]);
 
   const handleLogout = () => {
