@@ -41,6 +41,7 @@ export default function TestTelephonyPage() {
   const [selectedConfigId, setSelectedConfigId] = useState("");
   const [countryCode, setCountryCode] = useState("+91");
   const [localNumber, setLocalNumber] = useState("");
+  const [recordingEnabled, setRecordingEnabled] = useState(false);
   const [status, setStatus] = useState<"disconnected" | "dialing" | "connected" | "ended">("disconnected");
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -143,13 +144,17 @@ export default function TestTelephonyPage() {
         },
         body: JSON.stringify({
           agentConfigId: selectedConfigId,
-          phoneNumber: fullPhoneNumber
+          phoneNumber: fullPhoneNumber,
+          recordingEnabled
         })
       });
 
       if (!res.ok) {
         const errData = await res.json();
-        throw new Error(errData?.error || "Failed to initiate outbound call");
+        const msg = (errData?.error && typeof errData.error === "object")
+          ? errData.error.message
+          : (errData?.error || "Failed to initiate outbound call");
+        throw new Error(msg);
       }
 
       const session = await res.json();
@@ -491,6 +496,20 @@ export default function TestTelephonyPage() {
                     required
                   />
                 </div>
+              </div>
+ 
+              <div className="form-group" style={{ display: "flex", alignItems: "center", gap: "10px", margin: "16px 0" }}>
+                <input
+                  type="checkbox"
+                  id="telephony-recording"
+                  checked={recordingEnabled}
+                  onChange={(e) => setRecordingEnabled(e.target.checked)}
+                  disabled={status !== "disconnected" && status !== "ended"}
+                  style={{ width: "20px", height: "20px", cursor: "pointer" }}
+                />
+                <label htmlFor="telephony-recording" style={{ margin: 0, cursor: "pointer", fontSize: "14px", fontWeight: "600", color: "#ffffff" }}>
+                  Enable Call Audio Recording
+                </label>
               </div>
 
               {status === "disconnected" || status === "ended" ? (

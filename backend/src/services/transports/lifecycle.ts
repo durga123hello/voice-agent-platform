@@ -240,9 +240,13 @@ export async function updateSessionState(
 
     if (update.callState) {
       // Locking check: if currently in terminal state, do not allow changing callState
-      if (terminalStates.includes(currentCallState)) {
+      const isOverride = 
+        ['failed', 'unexpected_disconnect'].includes(currentCallState) && 
+        ['user_hangup', 'ai_hangup', 'completed'].includes(update.callState);
+
+      if (terminalStates.includes(currentCallState) && !isOverride) {
         console.log(`[State Updater] Lock engaged. Session ${sessionId} is already in terminal state "${existing.callState}". Rejecting transition to "${update.callState}".`);
-      } else if (canTransition(existing.callState, update.callState)) {
+      } else if (isOverride || canTransition(existing.callState, update.callState)) {
         finalUpdate.callState = update.callState;
       } else {
         console.warn(`[State Updater] Invalid call transition: ${existing.callState} -> ${update.callState}. Blocked.`);
@@ -335,8 +339,44 @@ export async function updateSessionState(
 // ----------------------------------------------------
 // Zombie Session Protection Reaper
 // ----------------------------------------------------
+export async function reapZombiesOnStartup() {
+  try {
+    console.log('[Zombie Reaper] Performing startup sweep for leaked active sessions...');
+    const leakedSessions = await prisma.session.findMany({
+      where: {
+        status: 'active'
+      }
+    });
+
+    if (leakedSessions.length > 0) {
+      console.log(`[Zombie Reaper] Found ${leakedSessions.length} leaked active sessions on startup. Marking as aborted.`);
+      for (const session of leakedSessions) {
+        await prisma.session.update({
+          where: { id: session.id },
+          data: {
+            status: 'aborted',
+            callState: 'failed',
+            mediaState: 'failed',
+            endedReason: 'Server reboot cleanup',
+            errorCode: 'CALL_DISCONNECTED',
+            errorMessage: 'Session was closed due to a server restart.',
+            endedAt: new Date()
+          }
+        });
+      }
+      console.log(`[Zombie Reaper] Successfully cleaned up ${leakedSessions.length} leaked sessions.`);
+    }
+  } catch (err) {
+    console.error('[Zombie Reaper Error] Startup sweep failed:', err);
+  }
+}
+
 export async function startZombieReaper() {
   console.log(`[Zombie Reaper] Starting background zombie session reaper (Threshold: ${SESSION_IDLE_TIMEOUT_MS}ms)...`);
+  
+  // Perform immediate startup sweep
+  reapZombiesOnStartup().catch(err => console.error('[Zombie Reaper Startup Error]', err));
+
   setInterval(async () => {
     try {
       const timeoutThreshold = new Date(Date.now() - SESSION_IDLE_TIMEOUT_MS);

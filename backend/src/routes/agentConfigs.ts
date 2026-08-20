@@ -45,7 +45,8 @@ function flattenConfig(config: any) {
     interviewPreferences: latestVersion.interviewPreferences,
     interviewDurationMinutes: latestVersion.interviewDurationMinutes,
     uploadedQuestions: latestVersion.uploadedQuestions,
-    behaviorSettings: latestVersion.behaviorSettings
+    behaviorSettings: latestVersion.behaviorSettings,
+    recordingEnabled: latestVersion.recordingEnabled
   };
 }
 
@@ -62,7 +63,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       interviewPreferences,
       interviewDurationMinutes,
       uploadedQuestions,
-      behaviorSettings
+      behaviorSettings,
+      recordingEnabled
     } = req.body;
 
     // Validate required fields
@@ -112,7 +114,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
           interviewPreferences: interviewPreferences || null,
           interviewDurationMinutes: parsedDuration,
           uploadedQuestions: uploadedQuestions || null,
-          behaviorSettings: behaviorSettings || null
+          behaviorSettings: behaviorSettings || null,
+          recordingEnabled: recordingEnabled !== undefined ? !!recordingEnabled : false
         }
       });
 
@@ -131,7 +134,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       interviewPreferences: result.version.interviewPreferences,
       interviewDurationMinutes: result.version.interviewDurationMinutes,
       uploadedQuestions: result.version.uploadedQuestions,
-      behaviorSettings: result.version.behaviorSettings
+      behaviorSettings: result.version.behaviorSettings,
+      recordingEnabled: result.version.recordingEnabled
     };
 
     res.status(201).json(response);
@@ -198,7 +202,8 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       interviewPreferences,
       interviewDurationMinutes,
       uploadedQuestions,
-      behaviorSettings
+      behaviorSettings,
+      recordingEnabled
     } = req.body;
 
     // Verify config exists and fetch latest version
@@ -244,6 +249,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     const mergedDuration = parsedDuration !== undefined ? parsedDuration : latestVersion.interviewDurationMinutes;
     const mergedQuestions = uploadedQuestions !== undefined ? uploadedQuestions : latestVersion.uploadedQuestions;
     const mergedBehavior = behaviorSettings !== undefined ? behaviorSettings : latestVersion.behaviorSettings;
+    const mergedRecording = recordingEnabled !== undefined ? !!recordingEnabled : latestVersion.recordingEnabled;
 
     // Validate merged requirements
     if (!mergedPrompt || typeof mergedPrompt !== 'string') {
@@ -279,7 +285,8 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
           interviewPreferences: mergedPrefs,
           interviewDurationMinutes: mergedDuration,
           uploadedQuestions: mergedQuestions,
-          behaviorSettings: mergedBehavior
+          behaviorSettings: mergedBehavior,
+          recordingEnabled: mergedRecording
         }
       });
 
@@ -298,7 +305,8 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       interviewPreferences: result.version.interviewPreferences,
       interviewDurationMinutes: result.version.interviewDurationMinutes,
       uploadedQuestions: result.version.uploadedQuestions,
-      behaviorSettings: result.version.behaviorSettings
+      behaviorSettings: result.version.behaviorSettings,
+      recordingEnabled: result.version.recordingEnabled
     };
 
     res.json(response);

@@ -1,4 +1,6 @@
-import { Router, Request, Response, NextFunction } from 'express';
+import express, { Router, Request, Response, NextFunction } from 'express';
+import fs from 'fs';
+import path from 'path';
 import prisma from '../db/client';
 import { endSessionPipeline } from '../services/signaling';
 import { DEFAULT_TENANT_ID } from '../index';
@@ -51,7 +53,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 // Create session: POST /api/sessions
 router.post('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { agentConfigId, transport, phoneNumber } = req.body;
+    const { agentConfigId, transport, phoneNumber, recordingEnabled } = req.body;
 
     if (!agentConfigId || typeof agentConfigId !== 'string') {
       res.status(400).json({ error: 'agentConfigId is required.' });
@@ -91,7 +93,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
         phoneNumber: phoneNumber || null,
         callState: resolvedTransport === 'webrtc' ? 'connected' : 'initiating',
         mediaState: resolvedTransport === 'webrtc' ? 'connecting' : 'disconnected',
-        conversationState: 'idle'
+        conversationState: 'idle',
+        recordingEnabled: !!recordingEnabled
       }
     });
 
@@ -113,7 +116,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 router.post('/outbound', async (req: Request, res: Response, next: NextFunction) => {
   let session: any;
   try {
-    const { agentConfigId, phoneNumber } = req.body;
+    const { agentConfigId, phoneNumber, recordingEnabled } = req.body;
 
     if (!agentConfigId || typeof agentConfigId !== 'string') {
       res.status(400).json({ error: 'agentConfigId is required.' });
@@ -147,7 +150,7 @@ router.post('/outbound', async (req: Request, res: Response, next: NextFunction)
       return;
     }
 
-    // Prevent duplicate active calls to the same number
+    // Auto-override any duplicate active calls to the same number (e.g. if stuck in DB)
     const existingActive = await prisma.session.findFirst({
       where: {
         phoneNumber,
@@ -157,9 +160,31 @@ router.post('/outbound', async (req: Request, res: Response, next: NextFunction)
     });
 
     if (existingActive) {
-      console.warn(`[Sessions Outbound] Call already active for number ${phoneNumber}. Rejecting duplicate request.`);
-      res.status(409).json({ error: 'A call is already active for this phone number.' });
-      return;
+      console.warn(`[Sessions Outbound] Found stuck active call for number ${phoneNumber}. Auto-reaping session ${existingActive.id}...`);
+      
+      // Close the telephony pipeline in memory
+      try {
+        const { closeTelephonySession } = require('../services/telephony/orchestrator');
+        closeTelephonySession(existingActive.id);
+      } catch (err) {}
+
+      // Update its database state to aborted
+      try {
+        await prisma.session.update({
+          where: { id: existingActive.id },
+          data: {
+            status: 'aborted',
+            callState: 'failed',
+            mediaState: 'failed',
+            endedReason: 'Overridden by a new outbound call',
+            errorCode: 'CALL_DISCONNECTED',
+            errorMessage: 'This session was terminated because a new call was initiated to this number.',
+            endedAt: new Date()
+          }
+        });
+      } catch (err) {
+        console.error(`[Sessions Outbound Error] Failed to abort old active session:`, err);
+      }
     }
 
     // Create session in database
@@ -172,7 +197,8 @@ router.post('/outbound', async (req: Request, res: Response, next: NextFunction)
         phoneNumber,
         callState: 'initiating',
         mediaState: 'disconnected',
-        conversationState: 'idle'
+        conversationState: 'idle',
+        recordingEnabled: !!recordingEnabled
       }
     });
 
@@ -465,6 +491,8 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
       return;
     }
 
+    const recordingUrl = session.recordingUrl;
+
     res.json({
       id: session.id,
       tenantId: session.tenantId,
@@ -484,10 +512,39 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
       lastActivityAt: session.lastActivityAt,
       agentConfig: {
         name: session.agentConfigVersion.agentConfig.name
-      }
+      },
+      recordingUrl
     });
   } catch (error) {
     next(error);
+  }
+});
+
+// WebRTC Call Recording Upload Endpoint: POST /api/sessions/:id/recording
+router.post('/:id/recording', express.raw({ type: 'audio/webm', limit: '50mb' }), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { id } = req.params;
+
+    // Ensure public/recordings folder exists in backend
+    const dir = path.resolve(__dirname, '../../public/recordings');
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    const filePath = path.join(dir, `${id}.webm`);
+    fs.writeFileSync(filePath, req.body);
+
+    const recordingUrl = `${req.protocol}://${req.get('host')}/public/recordings/${id}.webm`;
+
+    await prisma.session.update({
+      where: { id },
+      data: { recordingUrl }
+    });
+
+    console.log(`[WebRTC Recording] Saved recording for session ${id}: ${recordingUrl}`);
+    res.json({ success: true, recordingUrl });
+  } catch (err) {
+    next(err);
   }
 });
 

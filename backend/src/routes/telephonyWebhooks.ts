@@ -95,11 +95,59 @@ router.post('/plivo/status/:sessionId', async (req: Request, res: Response, next
         errorMessage,
         endedReason
       });
+
+      const isFinalState = [
+        'busy',
+        'no_answer',
+        'rejected',
+        'cancelled',
+        'timeout',
+        'failed',
+        'user_hangup',
+        'ai_hangup',
+        'unexpected_disconnect'
+      ].includes(callState);
+
+      if (isFinalState) {
+        try {
+          const { closeTelephonySession } = require('../services/telephony/orchestrator');
+          closeTelephonySession(sessionId);
+          console.log(`[Plivo Webhook] Telephony session ${sessionId} successfully cleaned up (final state: ${callState})`);
+        } catch (err) {
+          console.error(`[Plivo Webhook Cleanup Error] Failed to close telephony session:`, err);
+        }
+      }
     }
 
     res.status(200).json({ success: true });
   } catch (error) {
     console.error(`[Plivo Webhook Error] Failed processing status update:`, error);
+    next(error);
+  }
+});
+
+// Plivo Call Recording Webhook: POST /api/telephony/plivo/recordings/:sessionId
+router.post('/plivo/recordings/:sessionId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { sessionId } = req.params;
+    const payload = req.body;
+
+    console.log(`[Plivo Recording Webhook] Received recording callback for session ${sessionId}:`, JSON.stringify(payload, null, 2));
+
+    const { RecordUrl, RecordingID, RecordingDuration } = payload;
+
+    if (RecordUrl) {
+      // Save the recording URL directly to the Session model
+      await prisma.session.update({
+        where: { id: sessionId },
+        data: { recordingUrl: RecordUrl }
+      });
+      console.log(`[Plivo Recording Webhook] Recording saved directly to Session ${sessionId}: ${RecordUrl}`);
+    }
+
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error(`[Plivo Recording Webhook Error] Failed processing recording callback:`, error);
     next(error);
   }
 });

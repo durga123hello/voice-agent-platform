@@ -41,6 +41,7 @@ export default function SetupPage() {
   const [phoneNumber, setPhoneNumber] = useState("");
   const [callMessage, setCallMessage] = useState<{ text: string; isError: boolean; sessionId?: string } | null>(null);
   const [isCalling, setIsCalling] = useState(false);
+  const [telephonyRecording, setTelephonyRecording] = useState(false);
 
   // Dropdown list states for editing existing config
   const [configs, setConfigs] = useState<any[]>([]);
@@ -249,7 +250,10 @@ export default function SetupPage() {
 
       if (!res.ok) {
         const errData = await res.json();
-        throw new Error(errData?.error || `Failed to ${isEdit ? "update" : "create"} configuration.`);
+        const msg = (errData?.error && typeof errData.error === "object")
+          ? errData.error.message
+          : (errData?.error || `Failed to ${isEdit ? "update" : "create"} configuration.`);
+        throw new Error(msg);
       }
 
       const config = await res.json();
@@ -295,13 +299,17 @@ export default function SetupPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           agentConfigId: selectedConfigId,
-          phoneNumber: phoneNumber.trim()
+          phoneNumber: phoneNumber.trim(),
+          recordingEnabled: telephonyRecording
         }),
       });
 
       if (!res.ok) {
         const errData = await res.json();
-        throw new Error(errData?.error || "Failed to trigger outbound call.");
+        const msg = (errData?.error && typeof errData.error === "object")
+          ? errData.error.message
+          : (errData?.error || "Failed to trigger outbound call.");
+        throw new Error(msg);
       }
 
       const session = await res.json();
@@ -423,6 +431,22 @@ export default function SetupPage() {
           </div>
 
           <div className="form-group">
+            <label htmlFor="voice-pref">Voice Preference</label>
+            <select
+              id="voice-pref"
+              value={voicePreference}
+              onChange={(e) => setVoicePreference(e.target.value)}
+            >
+              <option value="aura-orion-en">US - Male (Aura Orion)</option>
+              <option value="aura-asteria-en">US - Female (Aura Asteria)</option>
+              <option value="aura-helios-en">UK - Male (Aura Helios)</option>
+              <option value="aura-stella-en">UK - Female (Aura Stella)</option>
+              <option value="aura-perseus-en">US - Male (Aura Perseus)</option>
+              <option value="aura-luna-en">US - Female (Aura Luna)</option>
+            </select>
+          </div>
+
+          <div className="form-group">
             <label htmlFor="system-prompt">System Prompt (Required)</label>
             <textarea
               id="system-prompt"
@@ -470,21 +494,7 @@ export default function SetupPage() {
                   />
                 </div>
 
-                <div className="form-group">
-                  <label htmlFor="voice-pref">Voice Preference</label>
-                  <select
-                    id="voice-pref"
-                    value={voicePreference}
-                    onChange={(e) => setVoicePreference(e.target.value)}
-                  >
-                    <option value="aura-asteria-en">Aura Asteria (English - Female)</option>
-                    <option value="aura-luna-en">Aura Luna (English - Female)</option>
-                    <option value="aura-stella-en">Aura Stella (English - Female)</option>
-                    <option value="aura-athena-en">Aura Athena (English - Female)</option>
-                    <option value="aura-arcas-en">Aura Arcas (English - Male)</option>
-                    <option value="aura-perseus-en">Aura Perseus (English - Male)</option>
-                  </select>
-                </div>
+
 
                 <div className="form-group">
                   <label htmlFor="duration">Interview Duration (Minutes)</label>
@@ -617,6 +627,19 @@ export default function SetupPage() {
               }}
               required
             />
+          </div>
+ 
+          <div className="form-group" style={{ display: "flex", alignItems: "center", gap: "10px", margin: "16px 0" }}>
+            <input
+              type="checkbox"
+              id="telephony-recording"
+              checked={telephonyRecording}
+              onChange={(e) => setTelephonyRecording(e.target.checked)}
+              style={{ width: "20px", height: "20px", cursor: "pointer" }}
+            />
+            <label htmlFor="telephony-recording" style={{ margin: 0, cursor: "pointer", fontSize: "14px", fontWeight: "600", color: "#ffffff" }}>
+              Enable Call Audio Recording
+            </label>
           </div>
 
           <button 

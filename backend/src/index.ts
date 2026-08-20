@@ -190,6 +190,24 @@ async function startServer() {
   // 7. Start listening
   startZombieReaper();
 
+  server.on('error', (err: any) => {
+    if (err.code === 'EADDRINUSE') {
+      if (server.listening) return;
+      console.warn(`[Port Bound Alert] Port ${PORT} is currently busy. Retrying in 1500ms...`);
+      setTimeout(() => {
+        if (server.listening) return;
+        try {
+          server.close();
+        } catch (e) {}
+        server.listen(PORT, () => {
+          console.log(`Server is running on port ${PORT}`);
+        });
+      }, 1500);
+    } else {
+      console.error('[Server Listen Error]', err);
+    }
+  });
+
   server.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
   });

@@ -41,6 +41,9 @@ class AudioQueuePlayer {
   public onChunkEnd?: (chunkIndex: number) => void;
   public onPlaybackError?: (chunkIndex: number, errorMsg: string) => void;
 
+  public mixedDest: MediaStreamAudioDestinationNode | null = null;
+  private micSource: MediaStreamAudioSourceNode | null = null;
+
   constructor(
     onSpeakingStateChange: (speaking: boolean) => void,
     onPlaybackComplete: () => void
@@ -55,6 +58,19 @@ class AudioQueuePlayer {
     }
     if (this.audioCtx.state === "suspended") {
       this.audioCtx.resume();
+    }
+  }
+
+  setMicStream(stream: MediaStream) {
+    this.init();
+    if (!this.mixedDest && this.audioCtx) {
+      try {
+        this.mixedDest = this.audioCtx.createMediaStreamDestination();
+        this.micSource = this.audioCtx.createMediaStreamSource(stream);
+        this.micSource.connect(this.mixedDest);
+      } catch (err) {
+        console.error("Failed to connect microphone source to mixed destination:", err);
+      }
     }
   }
 
@@ -94,6 +110,17 @@ class AudioQueuePlayer {
     this.onSpeakingStateChange(false);
   }
 
+  cleanup() {
+    this.stop();
+    if (this.micSource) {
+      try {
+        this.micSource.disconnect();
+      } catch (e) {}
+      this.micSource = null;
+    }
+    this.mixedDest = null;
+  }
+
   private playNext() {
     if (!this.audioCtx || this.isPlaying || this.queue.length === 0) return;
     this.isPlaying = true;
@@ -112,6 +139,11 @@ class AudioQueuePlayer {
     const source = this.audioCtx.createBufferSource();
     source.buffer = buffer;
     source.connect(this.audioCtx.destination);
+    if (this.mixedDest) {
+      try {
+        source.connect(this.mixedDest);
+      } catch (e) {}
+    }
     this.currentSource = source;
 
     if (this.onChunkStart) {
@@ -146,6 +178,7 @@ export default function TestVoicePage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [transport, setTransport] = useState<"webrtc" | "msg91">("webrtc");
   const [phoneNumber, setPhoneNumber] = useState("");
+  const [recordingEnabled, setRecordingEnabled] = useState(false);
   
   // Real-time transcript/conversation state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -177,6 +210,8 @@ export default function TestVoicePage() {
   const clientBufferToPlaybackMsRef = useRef<number | null>(null);
   const firstAudioChunkRecvTimeRef = useRef<number | null>(null);
   const rttIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
 
   // Instantiate the Audio Queue Player on mount
   useEffect(() => {
@@ -309,6 +344,14 @@ export default function TestVoicePage() {
         audioPlayerRef.current.init();
       }
 
+      // 0. Acquire microphone stream first to avoid race conditions/timeouts
+      if (transport === "webrtc" && !micStreamRef.current) {
+        addLog("Requesting local microphone stream access (getUserMedia)...");
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStreamRef.current = stream;
+        addLog("Microphone stream captured successfully.");
+      }
+
       let sessionId = existingSessionId;
 
       if (!sessionId) {
@@ -322,13 +365,17 @@ export default function TestVoicePage() {
           body: JSON.stringify({
             agentConfigId: selectedConfigId,
             transport,
-            phoneNumber: transport === "msg91" ? phoneNumber : undefined
+            phoneNumber: transport === "msg91" ? phoneNumber : undefined,
+            recordingEnabled
           }),
         });
 
         if (!sessionRes.ok) {
           const errData = await sessionRes.json();
-          throw new Error(errData?.error || "Failed to create session in database.");
+          const msg = (errData?.error && typeof errData.error === "object")
+            ? errData.error.message
+            : (errData?.error || "Failed to create session in database.");
+          throw new Error(msg);
         }
 
         const sessionData = await sessionRes.json();
@@ -538,13 +585,31 @@ export default function TestVoicePage() {
               });
 
               // Capture microphone and produce
-              addLog("Requesting local microphone stream access (getUserMedia)...");
-              const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-              micStreamRef.current = stream;
+              addLog("Using pre-captured microphone stream...");
+              const stream = micStreamRef.current;
+              if (!stream) throw new Error("Microphone stream not captured.");
               const track = stream.getAudioTracks()[0];
               
-              addLog(`Microphone track successfully captured. Label: "${track.label}", ID: "${track.id}", ReadyState: "${track.readyState}"`);
+              addLog(`Microphone track successfully resolved. Label: "${track.label}", ID: "${track.id}", ReadyState: "${track.readyState}"`);
               
+              if (recordingEnabled && audioPlayerRef.current) {
+                addLog("Initializing call recording (WebRTC)...");
+                audioPlayerRef.current.setMicStream(stream);
+                const mixedStream = audioPlayerRef.current.mixedDest?.stream;
+                if (mixedStream) {
+                  recordingChunksRef.current = [];
+                  const mediaRecorder = new MediaRecorder(mixedStream, { mimeType: 'audio/webm' });
+                  mediaRecorderRef.current = mediaRecorder;
+                  mediaRecorder.ondataavailable = (e) => {
+                    if (e.data && e.data.size > 0) {
+                      recordingChunksRef.current.push(e.data);
+                    }
+                  };
+                  mediaRecorder.start(500);
+                  addLog("WebRTC recording started.");
+                }
+              }
+
               addLog("Starting media production on local send transport...");
               const producer = await sendTransport.produce({ track });
               producerRef.current = producer;
@@ -720,6 +785,42 @@ export default function TestVoicePage() {
   };
 
   const handleDisconnect = (keepSession = false) => {
+    // Stop recording and upload WebRTC audio if active
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      addLog("Stopping WebRTC recording...");
+      const finalSessionId = sessionIdRef.current;
+      mediaRecorderRef.current.onstop = async () => {
+        if (recordingChunksRef.current.length > 0 && finalSessionId) {
+          const blob = new Blob(recordingChunksRef.current, { type: 'audio/webm' });
+          addLog(`Uploading WebRTC recording (${Math.round(blob.size / 1024)} KB) for Session ID: ${finalSessionId}...`);
+          try {
+            const res = await fetch(`${BACKEND_URL}/api/sessions/${finalSessionId}/recording`, {
+              method: "POST",
+              headers: { "Content-Type": "audio/webm" },
+              body: blob,
+              keepalive: true
+            });
+            if (res.ok) {
+              addLog("WebRTC recording uploaded successfully.");
+            } else {
+              addLog("Failed to upload WebRTC recording.");
+            }
+          } catch (err) {
+            console.error("Error uploading WebRTC recording:", err);
+            addLog("Error uploading WebRTC recording.");
+          }
+        }
+      };
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
+      mediaRecorderRef.current = null;
+    }
+
+    if (audioPlayerRef.current) {
+      audioPlayerRef.current.cleanup();
+    }
+
     if (!keepSession) {
       setStatus("disconnected");
       sessionIdRef.current = null;
@@ -733,12 +834,6 @@ export default function TestVoicePage() {
         addLog(`Stopped track: ${track.label}`);
       });
       micStreamRef.current = null;
-    }
-
-    // Stop and clear audio playback queue
-    if (audioPlayerRef.current) {
-      addLog("Stopping and clearing assistant audio player...");
-      audioPlayerRef.current.stop();
     }
 
     if (rttIntervalRef.current) {
@@ -881,51 +976,21 @@ export default function TestVoicePage() {
           </select>
         </div>
 
-        <div className="form-group">
-          <label>Select Transport Channel</label>
-          <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
-            <button
-              type="button"
-              className={`btn ${transport === "webrtc" ? "btn-primary" : "btn-secondary"}`}
-              style={{ flex: 1, padding: "8px 16px" }}
-              onClick={() => setTransport("webrtc")}
-              disabled={status !== "disconnected"}
-            >
-              🌐 WebRTC (Microphone)
-            </button>
-            <button
-              type="button"
-              className={`btn ${transport === "msg91" ? "btn-primary" : "btn-secondary"}`}
-              style={{ flex: 1, padding: "8px 16px" }}
-              onClick={() => setTransport("msg91")}
-              disabled={status !== "disconnected"}
-            >
-              📞 MSG91 (Phone Call)
-            </button>
-          </div>
-        </div>
 
-        {transport === "msg91" && (
-          <div className="form-group" style={{ animation: "fadeIn 0.2s ease" }}>
-            <label htmlFor="candidate-phone">Candidate Phone Number</label>
-            <input
-              id="candidate-phone"
-              type="tel"
-              placeholder="+91 99999 99999"
-              value={phoneNumber}
-              onChange={(e) => setPhoneNumber(e.target.value)}
-              disabled={status !== "disconnected"}
-              style={{
-                width: "100%",
-                padding: "10px",
-                borderRadius: "6px",
-                border: "1px solid var(--border-color)",
-                backgroundColor: "#0d0f12",
-                color: "#ffffff"
-              }}
-            />
-          </div>
-        )}
+
+        <div className="form-group" style={{ display: "flex", alignItems: "center", gap: "10px", margin: "16px 0" }}>
+          <input
+            type="checkbox"
+            id="session-recording"
+            checked={recordingEnabled}
+            onChange={(e) => setRecordingEnabled(e.target.checked)}
+            disabled={status !== "disconnected"}
+            style={{ width: "20px", height: "20px", cursor: "pointer" }}
+          />
+          <label htmlFor="session-recording" style={{ margin: 0, cursor: "pointer", fontSize: "14px", fontWeight: "600", color: "#ffffff" }}>
+            Enable Session Audio Recording
+          </label>
+        </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "16px", marginTop: "20px" }}>
           {status === "disconnected" ? (

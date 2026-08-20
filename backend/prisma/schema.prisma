@@ -147,6 +147,8 @@ model Session {
   errorCode            String?            @map("error_code")
   errorMessage         String?            @map("error_message")
   userMessage          String?            @map("user_message")
+  recordingEnabled     Boolean            @default(false) @map("recording_enabled")
+  recordingUrl         String?            @map("recording_url")
   lastActivityAt       DateTime           @default(now()) @updatedAt @map("last_activity_at") @db.Timestamptz
 
   tenant               Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
