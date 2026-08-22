@@ -77,10 +77,9 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
         llmModel,
         voicePreference,
         firstMessage: firstMessage || null,
-        transcriberConfig: transcriber || null,
+        transcriberConfig: transcriber ? { ...transcriber, utteranceEndMs: resolvedPacing } : { utteranceEndMs: resolvedPacing },
         recordingEnabled: !!recordingEnabled,
         silenceTimeoutSeconds: silenceTimeoutSeconds ? parseInt(silenceTimeoutSeconds, 10) : null,
-        utteranceEndMs: resolvedPacing,
         analysisPlan: analysisPlan || null,
         customContext: context || null
       }
@@ -96,7 +95,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       transcriberConfig: version.transcriberConfig,
       recordingEnabled: version.recordingEnabled,
       silenceTimeoutSeconds: version.silenceTimeoutSeconds,
-      utteranceEndMs: version.utteranceEndMs,
+      utteranceEndMs: resolvedPacing,
       analysisPlan: version.analysisPlan,
       customContext: version.customContext
     });
