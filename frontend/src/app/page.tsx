@@ -21,7 +21,6 @@ export default function SetupPage() {
   const [name, setName] = useState("");
   const [llmModel, setLlmModel] = useState("gpt-4o-mini");
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [utteranceEndMs, setUtteranceEndMs] = useState<number>(1800);
   
   // Collapsible Context Panel State
   const [isContextExpanded, setIsContextExpanded] = useState(false);
@@ -37,6 +36,12 @@ export default function SetupPage() {
   // Config Status States
   const [configMessage, setConfigMessage] = useState<{ text: string; isError: boolean } | null>(null);
   const [createdConfigId, setCreatedConfigId] = useState<string | null>(null);
+
+  // Outbound Call States
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [callMessage, setCallMessage] = useState<{ text: string; isError: boolean; sessionId?: string } | null>(null);
+  const [isCalling, setIsCalling] = useState(false);
+  const [telephonyRecording, setTelephonyRecording] = useState(false);
 
   // Dropdown list states for editing existing config
   const [configs, setConfigs] = useState<any[]>([]);
@@ -68,7 +73,6 @@ export default function SetupPage() {
       setCandidateResume("");
       setInterviewDuration("");
       setVoicePreference("aura-asteria-en");
-      setUtteranceEndMs(1800);
       setSkills([{ name: "", weightage: 0 }]);
       setQuestions([""]);
       setIsContextExpanded(false);
@@ -86,7 +90,6 @@ export default function SetupPage() {
       setCandidateResume(config.candidateResume || "");
       setInterviewDuration(config.interviewDurationMinutes ? String(config.interviewDurationMinutes) : "");
       setVoicePreference(config.voicePreference || "aura-asteria-en");
-      setUtteranceEndMs(config.utteranceEndMs || 1800);
 
       if (config.interviewPreferences && Array.isArray(config.interviewPreferences)) {
         setSkills(config.interviewPreferences);
@@ -230,7 +233,6 @@ export default function SetupPage() {
       interviewPreferences: filteredSkills.length > 0 ? filteredSkills : null,
       interviewDurationMinutes: duration,
       uploadedQuestions: filteredQuestions.length > 0 ? filteredQuestions : null,
-      utteranceEndMs,
     };
 
     const isEdit = !!selectedConfigId;
@@ -247,14 +249,11 @@ export default function SetupPage() {
       });
 
       if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        const errMsg =
-          typeof errData?.error === "object" && errData?.error?.message
-            ? errData.error.message
-            : typeof errData?.error === "string"
-            ? errData.error
-            : `Failed to ${isEdit ? "update" : "create"} configuration (Status: ${res.status}).`;
-        throw new Error(errMsg);
+        const errData = await res.json();
+        const msg = (errData?.error && typeof errData.error === "object")
+          ? errData.error.message
+          : (errData?.error || `Failed to ${isEdit ? "update" : "create"} configuration.`);
+        throw new Error(msg);
       }
 
       const config = await res.json();
@@ -275,6 +274,55 @@ export default function SetupPage() {
       await loadConfigs();
     } catch (err: any) {
       setConfigMessage({ text: err.message || "Failed to save configuration.", isError: true });
+    }
+  };
+
+  // Handle Trigger Call
+  const handleTriggerCall = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCallMessage(null);
+
+    if (!selectedConfigId) {
+      setCallMessage({ text: "Please select or create an Agent Configuration first.", isError: true });
+      return;
+    }
+
+    if (!phoneNumber.trim()) {
+      setCallMessage({ text: "Please enter a valid phone number.", isError: true });
+      return;
+    }
+
+    setIsCalling(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/outbound`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agentConfigId: selectedConfigId,
+          phoneNumber: phoneNumber.trim(),
+          recordingEnabled: telephonyRecording
+        }),
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        const msg = (errData?.error && typeof errData.error === "object")
+          ? errData.error.message
+          : (errData?.error || "Failed to trigger outbound call.");
+        throw new Error(msg);
+      }
+
+      const session = await res.json();
+      setCallMessage({
+        text: `Outbound call triggered successfully! Dialing...`,
+        isError: false,
+        sessionId: session.id
+      });
+      setPhoneNumber("");
+    } catch (err: any) {
+      setCallMessage({ text: err.message || "Failed to trigger outbound call.", isError: true });
+    } finally {
+      setIsCalling(false);
     }
   };
 
@@ -383,6 +431,22 @@ export default function SetupPage() {
           </div>
 
           <div className="form-group">
+            <label htmlFor="voice-pref">Voice Preference</label>
+            <select
+              id="voice-pref"
+              value={voicePreference}
+              onChange={(e) => setVoicePreference(e.target.value)}
+            >
+              <option value="aura-orion-en">US - Male (Aura Orion)</option>
+              <option value="aura-asteria-en">US - Female (Aura Asteria)</option>
+              <option value="aura-helios-en">UK - Male (Aura Helios)</option>
+              <option value="aura-stella-en">UK - Female (Aura Stella)</option>
+              <option value="aura-perseus-en">US - Male (Aura Perseus)</option>
+              <option value="aura-luna-en">US - Female (Aura Luna)</option>
+            </select>
+          </div>
+
+          <div className="form-group">
             <label htmlFor="system-prompt">System Prompt (Required)</label>
             <textarea
               id="system-prompt"
@@ -392,30 +456,6 @@ export default function SetupPage() {
               rows={6}
               required
             />
-          </div>
-
-          <div className="form-group" style={{ marginTop: "20px" }}>
-            <label htmlFor="pacing-select">
-              Conversational Pacing & User Pause Threshold
-            </label>
-            <p style={{ color: "var(--text-muted)", fontSize: "13px", marginTop: "2px", marginBottom: "8px" }}>
-              Controls how long the agent waits in silence before considering your thought complete and responding.
-            </p>
-            <select
-              id="pacing-select"
-              value={utteranceEndMs}
-              onChange={(e) => setUtteranceEndMs(Number(e.target.value))}
-            >
-              <option value={1000}>⚡ Fast &amp; Snappy (1.0s) — Rapid Q&amp;A, minimal pause tolerance</option>
-              <option value={1500}>💬 Dynamic (1.5s) — Light conversational pauses</option>
-              <option value={1800}>🗣️ Natural Conversation (1.8s) [Recommended] — Balanced breathing room</option>
-              <option value={2200}>🤔 Thoughtful (2.2s) — Comfortable pauses for thinking</option>
-              <option value={2500}>🧠 Interview Mode (2.5s) — Extended pauses for complex explanations</option>
-              <option value={3000}>⏳ Relaxed / Slow (3.0s) — Generous silence window</option>
-            </select>
-            <div style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "6px" }}>
-              💡 <em>Tip: You can also specify pause duration directly in your System Prompt (e.g. &quot;Allow 2.5s pause to think&quot;).</em>
-            </div>
           </div>
 
           {/* Collapsible Optional Block */}
@@ -454,21 +494,7 @@ export default function SetupPage() {
                   />
                 </div>
 
-                <div className="form-group">
-                  <label htmlFor="voice-pref">Voice Preference</label>
-                  <select
-                    id="voice-pref"
-                    value={voicePreference}
-                    onChange={(e) => setVoicePreference(e.target.value)}
-                  >
-                    <option value="aura-asteria-en">Aura Asteria (English - Female)</option>
-                    <option value="aura-luna-en">Aura Luna (English - Female)</option>
-                    <option value="aura-stella-en">Aura Stella (English - Female)</option>
-                    <option value="aura-athena-en">Aura Athena (English - Female)</option>
-                    <option value="aura-arcas-en">Aura Arcas (English - Male)</option>
-                    <option value="aura-perseus-en">Aura Perseus (English - Male)</option>
-                  </select>
-                </div>
+
 
                 <div className="form-group">
                   <label htmlFor="duration">Interview Duration (Minutes)</label>
@@ -543,6 +569,97 @@ export default function SetupPage() {
 
           <button type="submit" className="btn btn-primary" style={{ width: "100%", marginTop: "20px" }}>
             {selectedConfigId ? "Save New Version" : "Create Config"}
+          </button>
+        </form>
+      </div>
+
+      {/* Telephony Outbound Call */}
+      <div className="card" style={{ marginTop: "30px" }}>
+        <h2>3. Plivo Telephony Outbound Call</h2>
+        <p style={{ color: "var(--text-muted)", fontSize: "14px", marginBottom: "16px" }}>
+          Dial any mobile or landline number using the selected Agent Configuration.
+        </p>
+
+        {callMessage && (
+          <div className={`alert ${callMessage.isError ? "alert-error" : "alert-success"}`} style={{ padding: "12px", borderRadius: "6px", marginBottom: "16px" }}>
+            {callMessage.text}
+            {callMessage.sessionId && (
+              <div style={{ marginTop: "8px", fontSize: "13px" }}>
+                <Link 
+                  href={`/sessions/${callMessage.sessionId}`}
+                  style={{ color: "#00e6ff", textDecoration: "underline", fontWeight: "bold" }}
+                >
+                  View Active Call Transcript & Logs
+                </Link>
+              </div>
+            )}
+          </div>
+        )}
+
+        <form onSubmit={handleTriggerCall}>
+          <div className="form-group" style={{ marginBottom: "15px" }}>
+            <label style={{ fontWeight: "bold", display: "block", marginBottom: "6px" }}>Selected Agent Configuration</label>
+            <div style={{ padding: "10px", backgroundColor: "#0d0f12", border: "1px solid var(--border-color)", borderRadius: "6px", color: "#a0aec0", fontSize: "14px" }}>
+              {selectedConfigId 
+                ? (configs.find(c => c.id === selectedConfigId)?.name || "Unnamed Config")
+                : "No configuration selected. Please select one in Section 2 above."
+              }
+            </div>
+          </div>
+
+          <div className="form-group" style={{ marginBottom: "15px" }}>
+            <label htmlFor="target-phone" style={{ fontWeight: "bold", display: "block", marginBottom: "6px" }}>Recipient Phone Number (with Country Code)</label>
+            <input
+              id="target-phone"
+              type="text"
+              placeholder="e.g. +14155551234 or +919876543210"
+              value={phoneNumber}
+              onChange={(e) => setPhoneNumber(e.target.value)}
+              disabled={isCalling}
+              style={{
+                width: "100%",
+                padding: "10px",
+                borderRadius: "6px",
+                backgroundColor: "#0d0f12",
+                color: "#ffffff",
+                border: "1px solid var(--border-color)",
+                fontSize: "14px"
+              }}
+              required
+            />
+          </div>
+ 
+          <div className="form-group" style={{ display: "flex", alignItems: "center", gap: "10px", margin: "16px 0" }}>
+            <input
+              type="checkbox"
+              id="telephony-recording"
+              checked={telephonyRecording}
+              onChange={(e) => setTelephonyRecording(e.target.checked)}
+              style={{ width: "20px", height: "20px", cursor: "pointer" }}
+            />
+            <label htmlFor="telephony-recording" style={{ margin: 0, cursor: "pointer", fontSize: "14px", fontWeight: "600", color: "#ffffff" }}>
+              Enable Call Audio Recording
+            </label>
+          </div>
+
+          <button 
+            type="submit" 
+            className="btn btn-primary" 
+            style={{ 
+              width: "100%", 
+              marginTop: "10px", 
+              backgroundColor: isCalling ? "#4c535d" : "#0052cc",
+              padding: "12px",
+              borderRadius: "6px",
+              color: "#ffffff",
+              border: "none",
+              cursor: isCalling || !selectedConfigId ? "not-allowed" : "pointer",
+              fontWeight: "bold",
+              fontSize: "15px"
+            }}
+            disabled={isCalling || !selectedConfigId}
+          >
+            {isCalling ? "Dialing..." : "Call Number"}
           </button>
         </form>
       </div>

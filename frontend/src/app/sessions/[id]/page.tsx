@@ -38,6 +38,7 @@ interface Session {
     systemPrompt: string;
     llmModel: string;
   };
+  recordingUrl?: string | null;
 }
 
 export default function SessionDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -50,13 +51,11 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
   useEffect(() => {
     async function loadData() {
       try {
-        // Fetch session info
-        const sessionRes = await fetch(`${BACKEND_URL}/api/sessions`);
+        // Fetch session info directly
+        const sessionRes = await fetch(`${BACKEND_URL}/api/sessions/${id}`);
         if (!sessionRes.ok) throw new Error("Failed to fetch session metadata");
-        const allSessions: Session[] = await sessionRes.json();
-        const found = allSessions.find((s) => s.id === id);
-        if (!found) throw new Error("Session not found in history");
-        setSession(found);
+        const sessionData: Session = await sessionRes.json();
+        setSession(sessionData);
 
         // Fetch transcript messages
         const messagesRes = await fetch(`${BACKEND_URL}/api/sessions/${id}/transcript`);
@@ -157,6 +156,16 @@ export default function SessionDetailPage({ params }: { params: Promise<{ id: st
                 </div>
               </div>
             </div>
+            {session.recordingUrl && (
+              <div style={{ marginTop: "24px", paddingTop: "20px", borderTop: "1px solid var(--border-color)" }}>
+                <strong style={{ color: "var(--text-muted)", display: "block", marginBottom: "10px" }}>Session Audio Recording:</strong>
+                <audio 
+                  controls 
+                  src={session.recordingUrl} 
+                  style={{ width: "100%", borderRadius: "8px", outline: "none", backgroundColor: "#0d1117" }}
+                />
+              </div>
+            )}
           </div>
 
           {/* Transcript Chat Log */}

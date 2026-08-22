@@ -14,7 +14,6 @@ interface AgentConfig {
   systemPrompt: string;
   llmModel: string;
   voicePreference: string;
-  utteranceEndMs?: number;
 }
 
 interface ChatMessage {
@@ -42,6 +41,9 @@ class AudioQueuePlayer {
   public onChunkEnd?: (chunkIndex: number) => void;
   public onPlaybackError?: (chunkIndex: number, errorMsg: string) => void;
 
+  public mixedDest: MediaStreamAudioDestinationNode | null = null;
+  private micSource: MediaStreamAudioSourceNode | null = null;
+
   constructor(
     onSpeakingStateChange: (speaking: boolean) => void,
     onPlaybackComplete: () => void
@@ -56,6 +58,19 @@ class AudioQueuePlayer {
     }
     if (this.audioCtx.state === "suspended") {
       this.audioCtx.resume();
+    }
+  }
+
+  setMicStream(stream: MediaStream) {
+    this.init();
+    if (!this.mixedDest && this.audioCtx) {
+      try {
+        this.mixedDest = this.audioCtx.createMediaStreamDestination();
+        this.micSource = this.audioCtx.createMediaStreamSource(stream);
+        this.micSource.connect(this.mixedDest);
+      } catch (err) {
+        console.error("Failed to connect microphone source to mixed destination:", err);
+      }
     }
   }
 
@@ -95,6 +110,17 @@ class AudioQueuePlayer {
     this.onSpeakingStateChange(false);
   }
 
+  cleanup() {
+    this.stop();
+    if (this.micSource) {
+      try {
+        this.micSource.disconnect();
+      } catch (e) {}
+      this.micSource = null;
+    }
+    this.mixedDest = null;
+  }
+
   private playNext() {
     if (!this.audioCtx || this.isPlaying || this.queue.length === 0) return;
     this.isPlaying = true;
@@ -113,6 +139,11 @@ class AudioQueuePlayer {
     const source = this.audioCtx.createBufferSource();
     source.buffer = buffer;
     source.connect(this.audioCtx.destination);
+    if (this.mixedDest) {
+      try {
+        source.connect(this.mixedDest);
+      } catch (e) {}
+    }
     this.currentSource = source;
 
     if (this.onChunkStart) {
@@ -145,11 +176,9 @@ export default function TestVoicePage() {
   const [selectedConfigId, setSelectedConfigId] = useState("");
   const [status, setStatus] = useState<"disconnected" | "connecting" | "connected" | "reconnecting" | "ended">("disconnected");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  // API Key validation & warning dialog state
-  const [showKeyWarningModal, setShowKeyWarningModal] = useState(false);
-  const [missingKeys, setMissingKeys] = useState<string[]>([]);
-  const [verifyingKeys, setVerifyingKeys] = useState(false);
+  const [transport, setTransport] = useState<"webrtc" | "msg91">("webrtc");
+  const [phoneNumber, setPhoneNumber] = useState("");
+  const [recordingEnabled, setRecordingEnabled] = useState(false);
   
   // Real-time transcript/conversation state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -181,6 +210,8 @@ export default function TestVoicePage() {
   const clientBufferToPlaybackMsRef = useRef<number | null>(null);
   const firstAudioChunkRecvTimeRef = useRef<number | null>(null);
   const rttIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
 
   // Instantiate the Audio Queue Player on mount
   useEffect(() => {
@@ -288,54 +319,10 @@ export default function TestVoicePage() {
     setLogs((prev) => [...prev, timestamped]);
   };
 
-  const checkApiKeys = async (): Promise<{ ok: boolean; missing: string[] }> => {
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/credentials`);
-      if (!res.ok) {
-        throw new Error("Failed to check credentials");
-      }
-      const data: Array<{ provider: string; isConfigured: boolean }> = await res.json();
-      const hasDeepgram = data.some((c) => c.provider === "deepgram" && c.isConfigured);
-      const hasOpenai = data.some((c) => c.provider === "openai" && c.isConfigured);
-
-      const missing: string[] = [];
-      if (!hasDeepgram) missing.push("Deepgram API Key");
-      if (!hasOpenai) missing.push("OpenAI API Key");
-
-      return {
-        ok: missing.length === 0,
-        missing
-      };
-    } catch (err) {
-      console.error("Error verifying credentials:", err);
-      return {
-        ok: false,
-        missing: ["Deepgram API Key", "OpenAI API Key"]
-      };
-    }
-  };
-
   const handleConnect = async () => {
-    setErrorMessage(null);
-    setVerifyingKeys(true);
-
-    try {
-      const { ok, missing } = await checkApiKeys();
-      setVerifyingKeys(false);
-
-      if (!ok) {
-        setMissingKeys(missing);
-        setShowKeyWarningModal(true);
-        return;
-      }
-
-      isManualDisconnectRef.current = false;
-      reconnectCountRef.current = 0;
-      await connectSession(null);
-    } catch (err: any) {
-      setVerifyingKeys(false);
-      setErrorMessage(err.message || "Failed to verify API credentials");
-    }
+    isManualDisconnectRef.current = false;
+    reconnectCountRef.current = 0;
+    await connectSession(null);
   };
 
   const connectSession = async (existingSessionId: string | null) => {
@@ -357,6 +344,14 @@ export default function TestVoicePage() {
         audioPlayerRef.current.init();
       }
 
+      // 0. Acquire microphone stream first to avoid race conditions/timeouts
+      if (transport === "webrtc" && !micStreamRef.current) {
+        addLog("Requesting local microphone stream access (getUserMedia)...");
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        micStreamRef.current = stream;
+        addLog("Microphone stream captured successfully.");
+      }
+
       let sessionId = existingSessionId;
 
       if (!sessionId) {
@@ -367,12 +362,20 @@ export default function TestVoicePage() {
         const sessionRes = await fetch(`${BACKEND_URL}/api/sessions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ agentConfigId: selectedConfigId }),
+          body: JSON.stringify({
+            agentConfigId: selectedConfigId,
+            transport,
+            phoneNumber: transport === "msg91" ? phoneNumber : undefined,
+            recordingEnabled
+          }),
         });
 
         if (!sessionRes.ok) {
           const errData = await sessionRes.json();
-          throw new Error(errData?.error || "Failed to create session in database.");
+          const msg = (errData?.error && typeof errData.error === "object")
+            ? errData.error.message
+            : (errData?.error || "Failed to create session in database.");
+          throw new Error(msg);
         }
 
         const sessionData = await sessionRes.json();
@@ -390,11 +393,19 @@ export default function TestVoicePage() {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        addLog("Signaling WebSocket connection opened. Requesting router capabilities...");
+        addLog("Signaling WebSocket connection opened.");
         if (reconnectCountRef.current > 0) {
           addLog("Reconnection successful!");
           reconnectCountRef.current = 0;
         }
+
+        if (transport === "msg91") {
+          addLog(`MSG91 Transport engaged in standby mode. Telephone call initiated to ${phoneNumber || "unspecified number"}.`);
+          setStatus("connected");
+          return;
+        }
+
+        addLog("Requesting router capabilities...");
         ws.send(JSON.stringify({ type: "getRouterRtpCapabilities" }));
       };
 
@@ -574,13 +585,31 @@ export default function TestVoicePage() {
               });
 
               // Capture microphone and produce
-              addLog("Requesting local microphone stream access (getUserMedia)...");
-              const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-              micStreamRef.current = stream;
+              addLog("Using pre-captured microphone stream...");
+              const stream = micStreamRef.current;
+              if (!stream) throw new Error("Microphone stream not captured.");
               const track = stream.getAudioTracks()[0];
               
-              addLog(`Microphone track successfully captured. Label: "${track.label}", ID: "${track.id}", ReadyState: "${track.readyState}"`);
+              addLog(`Microphone track successfully resolved. Label: "${track.label}", ID: "${track.id}", ReadyState: "${track.readyState}"`);
               
+              if (recordingEnabled && audioPlayerRef.current) {
+                addLog("Initializing call recording (WebRTC)...");
+                audioPlayerRef.current.setMicStream(stream);
+                const mixedStream = audioPlayerRef.current.mixedDest?.stream;
+                if (mixedStream) {
+                  recordingChunksRef.current = [];
+                  const mediaRecorder = new MediaRecorder(mixedStream, { mimeType: 'audio/webm' });
+                  mediaRecorderRef.current = mediaRecorder;
+                  mediaRecorder.ondataavailable = (e) => {
+                    if (e.data && e.data.size > 0) {
+                      recordingChunksRef.current.push(e.data);
+                    }
+                  };
+                  mediaRecorder.start(500);
+                  addLog("WebRTC recording started.");
+                }
+              }
+
               addLog("Starting media production on local send transport...");
               const producer = await sendTransport.produce({ track });
               producerRef.current = producer;
@@ -734,19 +763,6 @@ export default function TestVoicePage() {
               break;
             }
 
-            case "webRtcTransportConnected":
-            case "produced":
-              // Handled by direct promise listeners
-              break;
-
-            case "sessionEnded": {
-              addLog("Session was ended by the server.");
-              isManualDisconnectRef.current = true;
-              handleDisconnect(false);
-              setStatus("disconnected");
-              break;
-            }
-
             case "error": {
               throw new Error(data.message);
             }
@@ -769,6 +785,42 @@ export default function TestVoicePage() {
   };
 
   const handleDisconnect = (keepSession = false) => {
+    // Stop recording and upload WebRTC audio if active
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      addLog("Stopping WebRTC recording...");
+      const finalSessionId = sessionIdRef.current;
+      mediaRecorderRef.current.onstop = async () => {
+        if (recordingChunksRef.current.length > 0 && finalSessionId) {
+          const blob = new Blob(recordingChunksRef.current, { type: 'audio/webm' });
+          addLog(`Uploading WebRTC recording (${Math.round(blob.size / 1024)} KB) for Session ID: ${finalSessionId}...`);
+          try {
+            const res = await fetch(`${BACKEND_URL}/api/sessions/${finalSessionId}/recording`, {
+              method: "POST",
+              headers: { "Content-Type": "audio/webm" },
+              body: blob,
+              keepalive: true
+            });
+            if (res.ok) {
+              addLog("WebRTC recording uploaded successfully.");
+            } else {
+              addLog("Failed to upload WebRTC recording.");
+            }
+          } catch (err) {
+            console.error("Error uploading WebRTC recording:", err);
+            addLog("Error uploading WebRTC recording.");
+          }
+        }
+      };
+      try {
+        mediaRecorderRef.current.stop();
+      } catch (e) {}
+      mediaRecorderRef.current = null;
+    }
+
+    if (audioPlayerRef.current) {
+      audioPlayerRef.current.cleanup();
+    }
+
     if (!keepSession) {
       setStatus("disconnected");
       sessionIdRef.current = null;
@@ -782,12 +834,6 @@ export default function TestVoicePage() {
         addLog(`Stopped track: ${track.label}`);
       });
       micStreamRef.current = null;
-    }
-
-    // Stop and clear audio playback queue
-    if (audioPlayerRef.current) {
-      addLog("Stopping and clearing assistant audio player...");
-      audioPlayerRef.current.stop();
     }
 
     if (rttIntervalRef.current) {
@@ -928,43 +974,28 @@ export default function TestVoicePage() {
               ))
             )}
           </select>
-          {selectedConfigId && (
-            <div style={{ marginTop: "10px", display: "flex", alignItems: "center", gap: "8px", fontSize: "13px" }}>
-              <span style={{ color: "var(--text-muted)" }}>Conversational Pacing:</span>
-              {(() => {
-                const selected = configs.find((c) => c.id === selectedConfigId);
-                const pauseMs = selected?.utteranceEndMs || 1800;
-                return (
-                  <span
-                    style={{
-                      backgroundColor: "rgba(56, 139, 253, 0.15)",
-                      border: "1px solid rgba(56, 139, 253, 0.4)",
-                      color: "#58a6ff",
-                      padding: "2px 8px",
-                      borderRadius: "4px",
-                      fontWeight: 600
-                    }}
-                  >
-                    ⏱️ {(pauseMs / 1000).toFixed(1)}s Pause Threshold
-                    {pauseMs <= 1200
-                      ? " (⚡ Fast & Snappy)"
-                      : pauseMs <= 2000
-                      ? " (🗣️ Natural)"
-                      : " (🧠 Interview / Thoughtful)"}
-                  </span>
-                );
-              })()}
-            </div>
-          )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+
+
+
+        <div className="form-group" style={{ display: "flex", alignItems: "center", gap: "10px", margin: "16px 0" }}>
+          <input
+            type="checkbox"
+            id="session-recording"
+            checked={recordingEnabled}
+            onChange={(e) => setRecordingEnabled(e.target.checked)}
+            disabled={status !== "disconnected"}
+            style={{ width: "20px", height: "20px", cursor: "pointer" }}
+          />
+          <label htmlFor="session-recording" style={{ margin: 0, cursor: "pointer", fontSize: "14px", fontWeight: "600", color: "#ffffff" }}>
+            Enable Session Audio Recording
+          </label>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: "16px", marginTop: "20px" }}>
           {status === "disconnected" ? (
-            <button
-              className="btn btn-success"
-              onClick={handleConnect}
-              disabled={configs.length === 0 || verifyingKeys}
-            >
-              {verifyingKeys ? "Checking API Keys..." : "Connect Microphone"}
+            <button className="btn btn-success" onClick={handleConnect} disabled={configs.length === 0}>
+              {transport === "msg91" ? "Initiate Phone Call" : "Connect Microphone"}
             </button>
           ) : status === "ended" ? (
             <button className="btn btn-secondary" onClick={() => setStatus("disconnected")}>
@@ -1031,84 +1062,134 @@ export default function TestVoicePage() {
                 : "Disconnected"}
             </span>
           </div>
+
+          {utteranceEndFired && (
+            <div
+              className="voice-status"
+              style={{
+                backgroundColor: "rgba(88, 166, 255, 0.2)",
+                color: "#58a6ff",
+                border: "1px solid rgba(88, 166, 255, 0.4)"
+              }}
+            >
+              ⚡ UtteranceEnd Fired
+            </div>
+          )}
+
+          {isSpeaking && (
+            <div
+              className="voice-status"
+              style={{
+                backgroundColor: "rgba(255, 165, 0, 0.2)",
+                color: "orange",
+                border: "1px solid rgba(255, 165, 0, 0.4)",
+                display: "flex",
+                alignItems: "center",
+                gap: "6px"
+              }}
+            >
+              <div
+                className="pulse-indicator"
+                style={{
+                  backgroundColor: "orange",
+                  boxShadow: "0 0 0 0 rgba(255, 165, 0, 0.7)",
+                  animation: "pulse-orange 1s infinite"
+                }}
+              ></div>
+              <span>🔊 Assistant Speaking {currentPlayingChunkIndex !== null && `(Chunk ${currentPlayingChunkIndex} of ${totalChunksExpected !== null ? totalChunksExpected : "..."})`}</span>
+            </div>
+          )}
         </div>
       </div>
 
+      {/* Real-time transcript display */}
       <div className="card">
-        <h2>2. Live Conversation Stream</h2>
-        <div className="transcript-area" ref={transcriptAreaRef}>
-          {messages.length === 0 ? (
-            <div style={{ color: "var(--text-muted)", fontStyle: "italic", textAlign: "center", marginTop: "100px" }}>
-              Click "Connect Microphone" above and begin speaking to test the conversational loop.
+        <h2>2. Live Conversation Output</h2>
+        <div
+          ref={transcriptAreaRef}
+          className="transcript-area"
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px",
+            height: "350px",
+            overflowY: "auto",
+            padding: "16px",
+            backgroundColor: "#0d0f12",
+            border: "1px solid var(--border-color)",
+            borderRadius: "6px"
+          }}
+        >
+          {messages.length === 0 && (
+            <div style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+              Conversation will appear here... Speak into your microphone to start.
             </div>
-          ) : (
-            messages.map((msg) => (
+          )}
+          
+          {messages.map((m) => {
+            const isUser = m.role === "user";
+            const isInProgress = m.id === "user-in-progress" || m.isStreaming;
+            
+            return (
               <div
-                key={msg.id}
+                key={m.id}
                 style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: msg.role === "user" ? "flex-end" : "flex-start",
-                  marginBottom: "16px"
+                  alignSelf: isUser ? "flex-end" : "flex-start",
+                  backgroundColor: isInProgress
+                    ? "rgba(255, 255, 255, 0.05)"
+                    : isUser
+                    ? "rgba(35, 134, 54, 0.15)"
+                    : "rgba(88, 166, 255, 0.1)",
+                  border: `1px solid ${
+                    isInProgress
+                      ? "var(--border-color)"
+                      : isUser
+                      ? "rgba(35, 134, 54, 0.4)"
+                      : "rgba(88, 166, 255, 0.3)"
+                  }`,
+                  borderRadius: "8px",
+                  padding: "10px 14px",
+                  maxWidth: "80%",
+                  wordBreak: "break-word",
+                  fontStyle: isInProgress ? "italic" : "normal",
+                  opacity: isInProgress ? 0.75 : 1
                 }}
               >
                 <div
                   style={{
-                    fontSize: "12px",
-                    fontWeight: 600,
-                    color: msg.role === "user" ? "#58a6ff" : "#56d364",
+                    fontSize: "11px",
+                    fontWeight: "bold",
+                    color: isInProgress
+                      ? "var(--text-muted)"
+                      : isUser
+                      ? "#56d364"
+                      : "#58a6ff",
                     marginBottom: "4px"
                   }}
                 >
-                  {msg.role === "user" ? "You (User)" : "Agent (Assistant)"}
+                  {isUser ? (isInProgress ? "User (speaking)" : "User") : "Assistant"}
                 </div>
-                <div
-                  style={{
-                    backgroundColor: msg.role === "user" ? "#1f2937" : "#16202c",
-                    border: `1px solid ${msg.role === "user" ? "#374151" : "#233348"}`,
-                    padding: "10px 14px",
-                    borderRadius: "8px",
-                    maxWidth: "80%",
-                    color: msg.isStreaming ? "var(--text-muted)" : "#ffffff"
-                  }}
-                >
-                  {msg.text || (msg.isStreaming ? "Thinking..." : "")}
+                <div style={{ color: "#ffffff", fontSize: "15px" }}>
+                  {m.text}
+                  {isInProgress && (
+                    <span
+                      className="pulse-indicator"
+                      style={{
+                        display: "inline-block",
+                        marginLeft: "6px",
+                        width: "8px",
+                        height: "8px"
+                      }}
+                    ></span>
+                  )}
                 </div>
               </div>
-            ))
-          )}
-        </div>
-
-        {/* Real-time speech status indicators */}
-        <div style={{ display: "flex", gap: "16px", marginTop: "12px", fontSize: "14px", color: "var(--text-muted)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span
-              style={{
-                display: "inline-block",
-                width: "10px",
-                height: "10px",
-                borderRadius: "50%",
-                backgroundColor: utteranceEndFired ? "#e3b341" : "#30363d"
-              }}
-            ></span>
-            <span>UtteranceEnd Event</span>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <span
-              style={{
-                display: "inline-block",
-                width: "10px",
-                height: "10px",
-                borderRadius: "50%",
-                backgroundColor: isSpeaking ? "#56d364" : "#30363d"
-              }}
-            ></span>
-            <span>Assistant Speaking (TTS Audio)</span>
-          </div>
+            );
+          })}
         </div>
       </div>
 
+      {/* Debug Logs */}
       <div className="card">
         <h2>3. Debug Console Logs</h2>
         <div
@@ -1175,51 +1256,6 @@ export default function TestVoicePage() {
           </div>
         </div>
       </div>
-
-      {/* Missing API Keys Warning Dialogue Box */}
-      {showKeyWarningModal && (
-        <div className="modal-overlay" onClick={() => setShowKeyWarningModal(false)}>
-          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <div className="modal-icon-warning">⚠️</div>
-              <h2 className="modal-title">Missing API Credentials</h2>
-            </div>
-            <div className="modal-body">
-              <p style={{ margin: "0 0 16px 0", color: "#e6edf3" }}>
-                Before connecting your microphone and starting a live voice session, the following required API keys must be configured:
-              </p>
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginBottom: "16px" }}>
-                {missingKeys.map((keyName) => (
-                  <div key={keyName} className="missing-key-badge">
-                    <span>⚠️</span>
-                    <span><strong>{keyName}</strong> is not configured</span>
-                  </div>
-                ))}
-              </div>
-              <p style={{ fontSize: "13px", color: "var(--text-muted)", margin: 0, lineHeight: 1.5 }}>
-                • <strong>Deepgram</strong> is required for real-time speech transcription & voice synthesis.<br />
-                • <strong>OpenAI</strong> is required for intelligent conversational agent responses.
-              </p>
-            </div>
-            <div className="modal-footer">
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setShowKeyWarningModal(false)}
-              >
-                Dismiss
-              </button>
-              <Link
-                href="/"
-                className="btn btn-primary"
-                onClick={() => setShowKeyWarningModal(false)}
-              >
-                Go to Setup Page &rarr;
-              </Link>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

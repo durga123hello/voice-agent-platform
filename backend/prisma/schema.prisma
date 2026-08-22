@@ -133,9 +133,25 @@ model Session {
   tenantId             String             @map("tenant_id") @db.Uuid
   agentConfigVersionId String             @map("agent_config_version_id") @db.Uuid
   status               String             @default("active") // 'active' | 'completed' | 'aborted'
+  transport            String             @default("webrtc")
+  phoneNumber          String?            @map("phone_number")
   startedAt            DateTime?          @default(now()) @map("started_at") @db.Timestamptz
   endedAt              DateTime?          @map("ended_at") @db.Timestamptz
   summary              String?
+
+  // Production-ready lowercase tracking columns
+  providerCallId       String?            @map("provider_call_id")
+  callState            String             @default("initiating") @map("call_state")
+  mediaState           String             @default("disconnected") @map("media_state")
+  conversationState    String             @default("idle") @map("conversation_state")
+  endedReason          String?            @map("ended_reason")
+  errorCode            String?            @map("error_code")
+  errorMessage         String?            @map("error_message")
+  userMessage          String?            @map("user_message")
+  recordingEnabled     Boolean            @default(false) @map("recording_enabled")
+  recordingUrl         String?            @map("recording_url")
+  lastActivityAt       DateTime           @default(now()) @updatedAt @map("last_activity_at") @db.Timestamptz
+
   tenant               Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   agentConfigVersion   AgentConfigVersion @relation(fields: [agentConfigVersionId], references: [id], onDelete: Cascade)
   messages             Message[]

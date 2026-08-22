@@ -2,7 +2,6 @@ import { Router, Request, Response, NextFunction } from 'express';
 import prisma from '../db/client';
 import { DEFAULT_USER_ID, DEFAULT_TENANT_ID } from '../index';
 import { apiKeyAuthOptional } from '../middleware/apiKeyAuth';
-import { resolveUtteranceEndMs } from '../utils/promptPacing';
 
 const router = Router();
 
@@ -47,7 +46,7 @@ function flattenConfig(config: any) {
     interviewDurationMinutes: latestVersion.interviewDurationMinutes,
     uploadedQuestions: latestVersion.uploadedQuestions,
     behaviorSettings: latestVersion.behaviorSettings,
-    utteranceEndMs: latestVersion.utteranceEndMs || 1800
+    recordingEnabled: latestVersion.recordingEnabled
   };
 }
 
@@ -65,7 +64,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       interviewDurationMinutes,
       uploadedQuestions,
       behaviorSettings,
-      utteranceEndMs
+      recordingEnabled
     } = req.body;
 
     // Validate required fields
@@ -92,8 +91,6 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     const tenantId = getTenantId(req);
     const userId = await getUserIdForTenant(tenantId);
 
-    const resolvedPacing = resolveUtteranceEndMs(utteranceEndMs, systemPrompt);
-
     const result = await prisma.$transaction(async (tx: any) => {
       // Create parent agent config
       const parent = await tx.agentConfig.create({
@@ -118,7 +115,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
           interviewDurationMinutes: parsedDuration,
           uploadedQuestions: uploadedQuestions || null,
           behaviorSettings: behaviorSettings || null,
-          utteranceEndMs: resolvedPacing
+          recordingEnabled: recordingEnabled !== undefined ? !!recordingEnabled : false
         }
       });
 
@@ -138,7 +135,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       interviewDurationMinutes: result.version.interviewDurationMinutes,
       uploadedQuestions: result.version.uploadedQuestions,
       behaviorSettings: result.version.behaviorSettings,
-      utteranceEndMs: result.version.utteranceEndMs || resolvedPacing
+      recordingEnabled: result.version.recordingEnabled
     };
 
     res.status(201).json(response);
@@ -206,7 +203,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       interviewDurationMinutes,
       uploadedQuestions,
       behaviorSettings,
-      utteranceEndMs
+      recordingEnabled
     } = req.body;
 
     // Verify config exists and fetch latest version
@@ -225,8 +222,8 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       return;
     }
 
-    const latestVersion = config.versions?.[0] || null;
-    const newVersionNumber = latestVersion ? latestVersion.version + 1 : 1;
+    const latestVersion = config.versions[0];
+    const newVersionNumber = latestVersion.version + 1;
 
     // Parse updated duration if present
     let parsedDuration: number | null | undefined = undefined;
@@ -243,19 +240,16 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
     }
 
     // Merge missing fields using values from the latest version to prevent clearing data
-    const mergedPrompt = systemPrompt !== undefined ? systemPrompt : (latestVersion?.systemPrompt || '');
-    const mergedModel = llmModel !== undefined ? llmModel : (latestVersion?.llmModel || 'gpt-4o-mini');
-    const mergedVoice = voicePreference !== undefined ? voicePreference : (latestVersion?.voicePreference || null);
-    const mergedJD = jobDescription !== undefined ? jobDescription : (latestVersion?.jobDescription || null);
-    const mergedResume = candidateResume !== undefined ? candidateResume : (latestVersion?.candidateResume || null);
-    const mergedPrefs = interviewPreferences !== undefined ? interviewPreferences : (latestVersion?.interviewPreferences || null);
-    const mergedDuration = parsedDuration !== undefined ? parsedDuration : (latestVersion?.interviewDurationMinutes || null);
-    const mergedQuestions = uploadedQuestions !== undefined ? uploadedQuestions : (latestVersion?.uploadedQuestions || null);
-    const mergedBehavior = behaviorSettings !== undefined ? behaviorSettings : (latestVersion?.behaviorSettings || null);
-    const mergedUtteranceEndMs = resolveUtteranceEndMs(
-      utteranceEndMs !== undefined ? utteranceEndMs : latestVersion?.utteranceEndMs,
-      mergedPrompt
-    );
+    const mergedPrompt = systemPrompt !== undefined ? systemPrompt : latestVersion.systemPrompt;
+    const mergedModel = llmModel !== undefined ? llmModel : latestVersion.llmModel;
+    const mergedVoice = voicePreference !== undefined ? voicePreference : latestVersion.voicePreference;
+    const mergedJD = jobDescription !== undefined ? jobDescription : latestVersion.jobDescription;
+    const mergedResume = candidateResume !== undefined ? candidateResume : latestVersion.candidateResume;
+    const mergedPrefs = interviewPreferences !== undefined ? interviewPreferences : latestVersion.interviewPreferences;
+    const mergedDuration = parsedDuration !== undefined ? parsedDuration : latestVersion.interviewDurationMinutes;
+    const mergedQuestions = uploadedQuestions !== undefined ? uploadedQuestions : latestVersion.uploadedQuestions;
+    const mergedBehavior = behaviorSettings !== undefined ? behaviorSettings : latestVersion.behaviorSettings;
+    const mergedRecording = recordingEnabled !== undefined ? !!recordingEnabled : latestVersion.recordingEnabled;
 
     // Validate merged requirements
     if (!mergedPrompt || typeof mergedPrompt !== 'string') {
@@ -273,7 +267,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       const parent = await tx.agentConfig.update({
         where: { id },
         data: {
-          name: name !== undefined ? (name || null) : undefined,
+          name: name !== undefined ? name : undefined,
           updatedAt: new Date()
         }
       });
@@ -285,14 +279,14 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
           version: newVersionNumber,
           systemPrompt: mergedPrompt,
           llmModel: mergedModel,
-          voicePreference: mergedVoice || null,
-          jobDescription: mergedJD || null,
-          candidateResume: mergedResume || null,
-          interviewPreferences: mergedPrefs || null,
-          interviewDurationMinutes: mergedDuration || null,
-          uploadedQuestions: mergedQuestions || null,
-          behaviorSettings: mergedBehavior || null,
-          utteranceEndMs: mergedUtteranceEndMs
+          voicePreference: mergedVoice,
+          jobDescription: mergedJD,
+          candidateResume: mergedResume,
+          interviewPreferences: mergedPrefs,
+          interviewDurationMinutes: mergedDuration,
+          uploadedQuestions: mergedQuestions,
+          behaviorSettings: mergedBehavior,
+          recordingEnabled: mergedRecording
         }
       });
 
@@ -312,12 +306,11 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
       interviewDurationMinutes: result.version.interviewDurationMinutes,
       uploadedQuestions: result.version.uploadedQuestions,
       behaviorSettings: result.version.behaviorSettings,
-      utteranceEndMs: result.version.utteranceEndMs || mergedUtteranceEndMs
+      recordingEnabled: result.version.recordingEnabled
     };
 
     res.json(response);
   } catch (error) {
-    console.error('[agentConfigs PUT Error]:', error);
     next(error);
   }
 });
