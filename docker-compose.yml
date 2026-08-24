@@ -1,12 +1,12 @@
 services:
   # ----------------------------------------------------------------------------
-  # PostgreSQL Database Service
+  # PostgreSQL Database Service (Internal container communication only)
   # ----------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
     container_name: voice-platform-postgres
     restart: unless-stopped
-    shm_size: 1gb
+    shm_size: 512mb
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgrespassword}
@@ -14,28 +14,28 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
     command: >
       postgres
-        -c shared_buffers=1GB
-        -c effective_cache_size=3GB
-        -c maintenance_work_mem=256MB
+        -c shared_buffers=512MB
+        -c effective_cache_size=1.5GB
+        -c maintenance_work_mem=128MB
         -c checkpoint_completion_target=0.9
         -c wal_buffers=16MB
         -c default_statistics_target=100
         -c random_page_cost=1.1
         -c effective_io_concurrency=200
         -c work_mem=16MB
-        -c min_wal_size=1GB
-        -c max_wal_size=4GB
-        -c max_connections=200
+        -c min_wal_size=512MB
+        -c max_wal_size=2GB
+        -c max_connections=150
     volumes:
       - postgres-data:/var/lib/postgresql/data
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 4G
+          cpus: '1.5'
+          memory: 2G
         reservations:
-          cpus: '0.5'
-          memory: 1.5G
+          cpus: '0.25'
+          memory: 512M
     logging:
       driver: "json-file"
       options:
@@ -51,7 +51,7 @@ services:
       - voice-bridge-network
 
   # ----------------------------------------------------------------------------
-  # Redis Cache & Session State
+  # Redis Cache & Session State (Internal container communication only)
   # ----------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
@@ -61,20 +61,18 @@ services:
       redis-server
         --appendonly yes
         --appendfsync everysec
-        --maxmemory 1024mb
+        --maxmemory 256mb
         --maxmemory-policy allkeys-lru
-        --tcp-backlog 65535
-        --timeout 300
     volumes:
       - redis-data:/data
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 1.5G
-        reservations:
-          cpus: '0.2'
+          cpus: '0.5'
           memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
     logging:
       driver: "json-file"
       options:
@@ -93,9 +91,7 @@ services:
   # Backend Voice & Signaling Service
   # ----------------------------------------------------------------------------
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ghcr.io/swarmx-ai/voice-orchestration-platform/backend:latest
     container_name: voice-platform-backend
     restart: unless-stopped
     env_file:
@@ -105,6 +101,7 @@ services:
       - PORT=3000
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgrespassword}@postgres:5432/${POSTGRES_DB:-voice_orchestration}?schema=public&connection_limit=50
       - REDIS_URL=redis://redis:6379
+      - NODE_OPTIONS=--max-old-space-size=1536
       - UV_THREADPOOL_SIZE=64
     ulimits:
       nofile:
@@ -112,19 +109,19 @@ services:
         hard: 65535
     ports:
       - "127.0.0.1:3000:3000"
-      - "20000-29999:20000-29999/udp"
-      - "20000-29999:20000-29999/tcp"
+      - "10000-10100:10000-10100/udp"
+      - "10000-10100:10000-10100/tcp"
     volumes:
       - uploads:/app/uploads
       - logs:/app/logs
     deploy:
       resources:
         limits:
-          cpus: '4.0'
-          memory: 6G
+          cpus: '2.5'
+          memory: 2.5G
         reservations:
-          cpus: '1.0'
-          memory: 2G
+          cpus: '0.5'
+          memory: 1G
     logging:
       driver: "json-file"
       options:
@@ -142,47 +139,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 25s
-    networks:
-      - voice-bridge-network
-
-  # ----------------------------------------------------------------------------
-  # Frontend Next.js Service
-  # ----------------------------------------------------------------------------
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: voice-platform-frontend
-    restart: unless-stopped
-    env_file:
-      - ./frontend/.env
-    environment:
-      - NODE_ENV=production
-      - PORT=3001
-    ports:
-      - "127.0.0.1:3001:3001"
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 2G
-        reservations:
-          cpus: '0.2'
-          memory: 512M
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "3"
-    depends_on:
-      backend:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3001/"]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
     networks:
       - voice-bridge-network
 
