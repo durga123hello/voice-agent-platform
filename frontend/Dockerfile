@@ -42,7 +42,7 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
-ENV PORT=3001
+ENV PORT=8080
 ENV HOSTNAME="0.0.0.0"
 
 # Install curl for healthcheck and dumb-init for PID 1 signal handling
@@ -68,11 +68,11 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 # Switch to unprivileged user
 USER nextjs
 
-EXPOSE 3001
+EXPOSE 8080
 
 # Health check verifies Next.js HTTP server responsiveness
 HEALTHCHECK --interval=15s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -f http://localhost:3001/ || exit 1
+  CMD curl -f http://localhost:8080/ || exit 1
 
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 CMD ["node", "server.js"]

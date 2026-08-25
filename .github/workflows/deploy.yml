@@ -90,6 +90,7 @@ jobs:
           env_vars: |
             NODE_ENV=production
             PORT=8080
+          flags: --port=8080
 
       - name: Trigger Remote Backend Deployment via SSH
         uses: appleboy/ssh-action@v1.0.3

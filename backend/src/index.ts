@@ -70,11 +70,14 @@ async function seedDefaultUser() {
           email: 'support@swarmx.ai',
           passwordHash: hashed,
           tenant: {
-            create: {
-              id: DEFAULT_TENANT_ID,
-              name: 'Developer Workspace Tenant',
-              contactEmail: 'support@swarmx.ai',
-              emailVerified: true
+            connectOrCreate: {
+              where: { id: DEFAULT_TENANT_ID },
+              create: {
+                id: DEFAULT_TENANT_ID,
+                name: 'Developer Workspace Tenant',
+                contactEmail: 'support@swarmx.ai',
+                emailVerified: true
+              }
             }
           }
         }
