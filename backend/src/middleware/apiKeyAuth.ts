@@ -1,6 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
+import jwt from 'jsonwebtoken';
 import prisma from '../db/client';
 import { hashApiKey } from '../utils/apiKey';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'jwt-secret-key-123';
 
 export async function apiKeyAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
@@ -19,7 +22,24 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
     return;
   }
 
-  // Parse prefix: format is [sk|pk|vap]_live_[prefix]_[secret]
+  // Check if it's a JWT Session Token
+  if (!rawKey.startsWith('vap_live_') && !rawKey.startsWith('sk_live_') && !rawKey.startsWith('pk_live_')) {
+    try {
+      const payload = jwt.verify(rawKey, JWT_SECRET) as { tenantId: string; userId?: string; email: string };
+      if (payload && payload.tenantId) {
+        (req as any).tenantId = payload.tenantId;
+        (req as any).userId = payload.userId;
+        (req as any).userEmail = payload.email;
+        next();
+        return;
+      }
+    } catch (jwtErr) {
+      res.status(401).json({ error: 'Unauthorized: Invalid credentials or token expired' });
+      return;
+    }
+  }
+
+  // Parse API key prefix: format is [sk|pk|vap]_live_[prefix]_[secret]
   const parts = rawKey.split('_');
   if (parts.length < 4 || (parts[0] !== 'vap' && parts[0] !== 'sk' && parts[0] !== 'pk') || parts[1] !== 'live') {
     res.status(401).json({ error: 'Unauthorized: Invalid API Key format' });
@@ -35,6 +55,9 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
         keyPrefix,
         keyHash,
         isActive: true
+      },
+      include: {
+        project: true
       }
     });
 
@@ -66,8 +89,9 @@ export async function apiKeyAuth(req: Request, res: Response, next: NextFunction
       data: { lastUsedAt: new Date() }
     }).catch((err: any) => console.error('[API Key Auth] Failed to update lastUsedAt:', err));
 
-    // Attach tenantId to request context
-    (req as any).tenantId = apiKeyRow.tenantId;
+    // Attach projectId and tenantId to request context
+    (req as any).projectId = apiKeyRow.projectId;
+    (req as any).tenantId = apiKeyRow.project.tenantId;
 
     next();
   } catch (error) {
@@ -92,11 +116,29 @@ export async function apiKeyAuthOptional(req: Request, res: Response, next: Next
   // If no key is provided at all, let it slide to the next middleware (fallback to DEFAULT_TENANT_ID)
   if (!rawKey) {
     (req as any).tenantId = null;
+    (req as any).projectId = null;
     next();
     return;
   }
 
-  // If key is present but format is wrong, reject it
+  // Check if it's a JWT Session Token
+  if (!rawKey.startsWith('vap_live_') && !rawKey.startsWith('sk_live_') && !rawKey.startsWith('pk_live_')) {
+    try {
+      const payload = jwt.verify(rawKey, JWT_SECRET) as { tenantId: string; userId?: string; email: string };
+      if (payload && payload.tenantId) {
+        (req as any).tenantId = payload.tenantId;
+        (req as any).userId = payload.userId;
+        (req as any).userEmail = payload.email;
+        next();
+        return;
+      }
+    } catch (jwtErr) {
+      res.status(401).json({ error: 'Unauthorized: Invalid token or expired session' });
+      return;
+    }
+  }
+
+  // Parse API key format
   const parts = rawKey.split('_');
   if (parts.length < 4 || (parts[0] !== 'vap' && parts[0] !== 'sk' && parts[0] !== 'pk') || parts[1] !== 'live') {
     res.status(401).json({ error: 'Unauthorized: Invalid API Key format' });
@@ -112,6 +154,9 @@ export async function apiKeyAuthOptional(req: Request, res: Response, next: Next
         keyPrefix,
         keyHash,
         isActive: true
+      },
+      include: {
+        project: true
       }
     });
 
@@ -143,8 +188,9 @@ export async function apiKeyAuthOptional(req: Request, res: Response, next: Next
       data: { lastUsedAt: new Date() }
     }).catch((err: any) => console.error('[API Key Auth] Failed to update lastUsedAt:', err));
 
-    // Attach tenantId to request context
-    (req as any).tenantId = apiKeyRow.tenantId;
+    // Attach projectId and tenantId to request context
+    (req as any).projectId = apiKeyRow.projectId;
+    (req as any).tenantId = apiKeyRow.project.tenantId;
 
     next();
   } catch (error) {

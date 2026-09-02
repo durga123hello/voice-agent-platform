@@ -6,7 +6,9 @@ import { generateApiKey, hashApiKey } from '../utils/apiKey';
 const router = Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'jwt-secret-key-123';
 
-// 1. Unified authentication middleware for dashboard (JWT) or programmatic callers (API Key)
+/**
+ * Unified authentication middleware for dashboard (JWT) or programmatic callers (API Key)
+ */
 async function dashboardOrApiKeyAuth(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   const xApiKeyHeader = req.headers['x-api-key'];
@@ -19,9 +21,6 @@ async function dashboardOrApiKeyAuth(req: Request, res: Response, next: NextFunc
     token = xApiKeyHeader.trim();
   }
 
-  // Fallback check for testing: if it's the internal system config UI flow (using DEFAULT_TENANT_ID)
-  // we can let it pass if no auth header is present and we're not in production.
-  // But for key generation, we require active auth.
   if (!token) {
     res.status(401).json({ error: 'Unauthorized: Missing credentials' });
     return;
@@ -39,13 +38,15 @@ async function dashboardOrApiKeyAuth(req: Request, res: Response, next: NextFunc
 
     try {
       const apiKeyRow = await prisma.apiKey.findFirst({
-        where: { keyPrefix, keyHash, isActive: true }
+        where: { keyPrefix, keyHash, isActive: true },
+        include: { project: true }
       });
       if (!apiKeyRow) {
         res.status(401).json({ error: 'Unauthorized: Invalid or inactive API Key' });
         return;
       }
-      (req as any).tenantId = apiKeyRow.tenantId;
+      (req as any).projectId = apiKeyRow.projectId;
+      (req as any).tenantId = apiKeyRow.project.tenantId;
       next();
     } catch (err) {
       res.status(500).json({ error: 'Internal server error during auth' });
@@ -54,12 +55,14 @@ async function dashboardOrApiKeyAuth(req: Request, res: Response, next: NextFunc
   } else {
     // Treat as JWT session token
     try {
-      const payload = jwt.verify(token, JWT_SECRET) as { tenantId: string; email: string };
+      const payload = jwt.verify(token, JWT_SECRET) as { tenantId: string; userId?: string; email: string };
       if (!payload || !payload.tenantId) {
         res.status(401).json({ error: 'Unauthorized: Invalid session token' });
         return;
       }
       (req as any).tenantId = payload.tenantId;
+      (req as any).userId = payload.userId;
+      (req as any).userEmail = payload.email;
       next();
     } catch (err) {
       res.status(401).json({ error: 'Unauthorized: Session expired or invalid' });
@@ -68,49 +71,36 @@ async function dashboardOrApiKeyAuth(req: Request, res: Response, next: NextFunc
   }
 }
 
-// Endpoint to create a tenant (Admin Helper)
-router.post('/tenants', async (req: Request, res: Response, next: NextFunction) => {
+// Apply auth middleware to all routes in this router
+router.use(dashboardOrApiKeyAuth);
+
+/**
+ * 1. Create API Key: POST /api/api-keys or POST /v1/api-keys (or POST /)
+ */
+async function createApiKeyHandler(req: Request, res: Response, next: NextFunction) {
   try {
-    const { name, contactEmail } = req.body;
-    if (!name) {
-      res.status(400).json({ error: 'Name is required' });
-      return;
-    }
-
-    const tenant = await prisma.tenant.create({
-      data: {
-        name,
-        contactEmail
-      }
-    });
-
-    res.status(201).json({ tenant });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Apply auth middleware to all api-keys endpoints
-router.use('/api-keys', dashboardOrApiKeyAuth);
-
-// Endpoint to issue a new API key
-router.post('/api-keys', async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const tenantId = (req as any).tenantId; // Securely resolved from auth token
-    const { name, type } = req.body;
+    const tenantId = (req as any).tenantId;
+    let { projectId, name, type } = req.body;
 
     if (!tenantId) {
       res.status(400).json({ error: 'tenantId is required' });
       return;
     }
 
-    // Verify tenant exists
-    const tenant = await prisma.tenant.findUnique({
-      where: { id: tenantId }
-    });
-    if (!tenant) {
-      res.status(404).json({ error: 'Tenant not found' });
-      return;
+    // Resolve project ID
+    if (!projectId) {
+      const firstProj = await prisma.project.findFirst({ where: { tenantId } });
+      if (!firstProj) {
+        res.status(400).json({ error: 'No projects found. Create a project first.' });
+        return;
+      }
+      projectId = firstProj.id;
+    } else {
+      const proj = await prisma.project.findFirst({ where: { id: projectId, tenantId } });
+      if (!proj) {
+        res.status(404).json({ error: 'Project not found or unauthorized' });
+        return;
+      }
     }
 
     const keyType = type === 'public' ? 'public' : 'private';
@@ -119,7 +109,7 @@ router.post('/api-keys', async (req: Request, res: Response, next: NextFunction)
 
     const apiKeyRow = await prisma.apiKey.create({
       data: {
-        tenantId,
+        projectId,
         keyPrefix,
         keyHash,
         name: name || null,
@@ -132,7 +122,7 @@ router.post('/api-keys', async (req: Request, res: Response, next: NextFunction)
       rawKey,
       key: {
         id: apiKeyRow.id,
-        tenantId: apiKeyRow.tenantId,
+        projectId: apiKeyRow.projectId,
         keyPrefix: apiKeyRow.keyPrefix,
         name: apiKeyRow.name,
         keyType: apiKeyRow.keyType,
@@ -144,21 +134,29 @@ router.post('/api-keys', async (req: Request, res: Response, next: NextFunction)
   } catch (error) {
     next(error);
   }
-});
+}
 
-// Endpoint to list all keys for a tenant
-router.get('/api-keys', async (req: Request, res: Response, next: NextFunction) => {
+/**
+ * 2. List API Keys: GET /api/api-keys or GET /v1/api-keys (or GET /)
+ */
+async function listApiKeysHandler(req: Request, res: Response, next: NextFunction) {
   try {
-    const tenantId = (req as any).tenantId; // Securely resolved from auth token
+    const tenantId = (req as any).tenantId;
+    const { projectId } = req.query;
+
+    let whereClause: any = { project: { tenantId } };
+    if (projectId && typeof projectId === 'string') {
+      whereClause = { projectId, project: { tenantId } };
+    }
 
     const keys = await prisma.apiKey.findMany({
-      where: { tenantId },
+      where: whereClause,
       orderBy: { createdAt: 'desc' }
     });
 
     const sanitizedKeys = keys.map((k: any) => ({
       id: k.id,
-      tenantId: k.tenantId,
+      projectId: k.projectId,
       keyPrefix: k.keyPrefix,
       name: k.name,
       keyType: k.keyType,
@@ -171,12 +169,14 @@ router.get('/api-keys', async (req: Request, res: Response, next: NextFunction) 
   } catch (error) {
     next(error);
   }
-});
+}
 
-// Endpoint to rotate an API key (issues new key, revokes old one)
+/**
+ * 3. Rotate API Key: POST /api/api-keys/rotate
+ */
 router.post('/api-keys/rotate', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = (req as any).tenantId; // Securely resolved from auth token
+    const tenantId = (req as any).tenantId;
     const { oldKeyId, name } = req.body;
     
     if (!oldKeyId) {
@@ -184,12 +184,13 @@ router.post('/api-keys/rotate', async (req: Request, res: Response, next: NextFu
       return;
     }
 
-    // Verify old key exists and belongs to the tenant
+    // Verify old key exists and belongs to tenant
     const oldKey = await prisma.apiKey.findUnique({
-      where: { id: oldKeyId }
+      where: { id: oldKeyId },
+      include: { project: true }
     });
 
-    if (!oldKey || oldKey.tenantId !== tenantId) {
+    if (!oldKey || oldKey.project.tenantId !== tenantId) {
       res.status(404).json({ error: 'Existing API Key not found or mismatched tenant' });
       return;
     }
@@ -200,7 +201,7 @@ router.post('/api-keys/rotate', async (req: Request, res: Response, next: NextFu
     const [newKey, revokedKey] = await prisma.$transaction([
       prisma.apiKey.create({
         data: {
-          tenantId,
+          projectId: oldKey.projectId,
           keyPrefix,
           keyHash,
           name: name || oldKey.name,
@@ -218,7 +219,7 @@ router.post('/api-keys/rotate', async (req: Request, res: Response, next: NextFu
       rawKey,
       newKey: {
         id: newKey.id,
-        tenantId: newKey.tenantId,
+        projectId: newKey.projectId,
         keyPrefix: newKey.keyPrefix,
         name: newKey.name,
         keyType: newKey.keyType,
@@ -228,7 +229,7 @@ router.post('/api-keys/rotate', async (req: Request, res: Response, next: NextFu
       },
       oldKey: {
         id: revokedKey.id,
-        tenantId: revokedKey.tenantId,
+        projectId: revokedKey.projectId,
         keyPrefix: revokedKey.keyPrefix,
         name: revokedKey.name,
         keyType: revokedKey.keyType,
@@ -242,43 +243,72 @@ router.post('/api-keys/rotate', async (req: Request, res: Response, next: NextFu
   }
 });
 
-// Endpoint to revoke a specific API key
+/**
+ * 4. Revoke API Key: POST /api/api-keys/revoke or DELETE /v1/api-keys/:id
+ */
+async function revokeApiKey(keyId: string, tenantId: string, res: Response) {
+  const existingKey = await prisma.apiKey.findUnique({
+    where: { id: keyId },
+    include: { project: true }
+  });
+  if (!existingKey || existingKey.project.tenantId !== tenantId) {
+    res.status(404).json({ error: 'API Key not found or unauthorized' });
+    return;
+  }
+
+  const revokedKey = await prisma.apiKey.update({
+    where: { id: keyId },
+    data: { isActive: false }
+  });
+
+  res.json({
+    success: true,
+    message: 'API Key successfully revoked.',
+    key: {
+      id: revokedKey.id,
+      projectId: revokedKey.projectId,
+      keyPrefix: revokedKey.keyPrefix,
+      name: revokedKey.name,
+      keyType: revokedKey.keyType,
+      isActive: revokedKey.isActive,
+      createdAt: revokedKey.createdAt,
+      lastUsedAt: revokedKey.lastUsedAt
+    }
+  });
+}
+
 router.post('/api-keys/revoke', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const tenantId = (req as any).tenantId; // Securely resolved from auth token
+    const tenantId = (req as any).tenantId;
     const { keyId } = req.body;
     if (!keyId) {
       res.status(400).json({ error: 'keyId is required' });
       return;
     }
+    await revokeApiKey(keyId, tenantId, res);
+  } catch (error) {
+    next(error);
+  }
+});
 
-    // Verify key belongs to the authenticated tenant
-    const existingKey = await prisma.apiKey.findUnique({
-      where: { id: keyId }
-    });
-    if (!existingKey || existingKey.tenantId !== tenantId) {
-      res.status(404).json({ error: 'API Key not found or unauthorized' });
-      return;
-    }
+// Mount path variants for `/api-keys` and standard `/v1/api-keys`
+router.post('/api-keys', createApiKeyHandler);
+router.get('/api-keys', listApiKeysHandler);
+router.delete('/api-keys/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    await revokeApiKey(req.params.id, tenantId, res);
+  } catch (error) {
+    next(error);
+  }
+});
 
-    const revokedKey = await prisma.apiKey.update({
-      where: { id: keyId },
-      data: { isActive: false }
-    });
-
-    res.json({
-      success: true,
-      key: {
-        id: revokedKey.id,
-        tenantId: revokedKey.tenantId,
-        keyPrefix: revokedKey.keyPrefix,
-        name: revokedKey.name,
-        keyType: revokedKey.keyType,
-        isActive: revokedKey.isActive,
-        createdAt: revokedKey.createdAt,
-        lastUsedAt: revokedKey.lastUsedAt
-      }
-    });
+router.post('/', createApiKeyHandler);
+router.get('/', listApiKeysHandler);
+router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    await revokeApiKey(req.params.id, tenantId, res);
   } catch (error) {
     next(error);
   }

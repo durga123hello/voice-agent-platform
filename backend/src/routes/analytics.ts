@@ -18,7 +18,7 @@ router.get('/overview', async (req: Request, res: Response, next: NextFunction) 
 
     // 1. Fetch all sessions under the default tenant, including events and assistant messages
     const sessions = await prisma.session.findMany({
-      where: { tenantId: DEFAULT_TENANT_ID },
+      where: { project: { tenantId: DEFAULT_TENANT_ID } },
       include: {
         messages: {
           where: { role: 'assistant' }

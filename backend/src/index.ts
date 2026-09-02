@@ -57,37 +57,91 @@ function verifyFfmpegLoudCheck(): string {
  */
 async function seedDefaultUser() {
   try {
-    const existing = await prisma.user.findUnique({
+    // 1. Ensure Default Tenant exists
+    let tenant = await prisma.tenant.findUnique({
+      where: { id: DEFAULT_TENANT_ID }
+    });
+    if (!tenant) {
+      tenant = await prisma.tenant.create({
+        data: {
+          id: DEFAULT_TENANT_ID,
+          name: 'Developer Workspace Tenant',
+          contactEmail: 'support@swarmx.ai',
+          emailVerified: true
+        }
+      });
+    }
+
+    // 2. Ensure Default Project exists for Tenant
+    const project = await prisma.project.findFirst({
+      where: { tenantId: DEFAULT_TENANT_ID }
+    });
+    if (!project) {
+      await prisma.project.create({
+        data: {
+          name: 'Default Project',
+          tenantId: DEFAULT_TENANT_ID
+        }
+      });
+    }
+
+    // 3. Ensure Default User exists
+    let user = await prisma.user.findUnique({
       where: { id: DEFAULT_USER_ID }
     });
-
-    if (!existing) {
+    if (!user) {
       const hashed = await bcrypt.hash('secret-password', 10);
-      
-      const user = await prisma.user.create({
+      user = await prisma.user.create({
         data: {
           id: DEFAULT_USER_ID,
           email: 'support@swarmx.ai',
-          passwordHash: hashed,
-          tenant: {
-            connectOrCreate: {
-              where: { id: DEFAULT_TENANT_ID },
-              create: {
-                id: DEFAULT_TENANT_ID,
-                name: 'Developer Workspace Tenant',
-                contactEmail: 'support@swarmx.ai',
-                emailVerified: true
-              }
-            }
-          }
+          passwordHash: hashed
         }
       });
-      console.log(`Successfully seeded default user ${user.email} (Tenant ID: ${DEFAULT_TENANT_ID})`);
-    } else {
-      console.log('Default user already exists.');
     }
+
+    // 4. Ensure Organization Membership link exists
+    const membership = await prisma.tenantMember.findUnique({
+      where: {
+        userId_tenantId: {
+          userId: user.id,
+          tenantId: tenant.id
+        }
+      }
+    });
+    if (!membership) {
+      await prisma.tenantMember.create({
+        data: {
+          userId: user.id,
+          tenantId: tenant.id,
+          role: 'owner'
+        }
+      });
+    }
+    console.log(`Successfully seeded default user ${user.email} (Tenant ID: ${DEFAULT_TENANT_ID})`);
   } catch (err) {
     console.error('Error during database seed checklist:', err);
+  }
+}
+
+async function ensureDefaultProjects() {
+  try {
+    const tenants = await prisma.tenant.findMany({
+      include: { projects: true }
+    });
+    for (const tenant of tenants) {
+      if (tenant.projects.length === 0) {
+        console.log(`[Boot] Creating default project for Tenant: ${tenant.name || tenant.id}`);
+        await prisma.project.create({
+          data: {
+            name: 'Default Project',
+            tenantId: tenant.id
+          }
+        });
+      }
+    }
+  } catch (err) {
+    console.error('Error ensuring default projects for tenants:', err);
   }
 }
 
@@ -128,8 +182,9 @@ async function startServer() {
     }
   }
 
-  // 4. Seed default user
+  // 4. Seed default user & default projects
   await seedDefaultUser();
+  await ensureDefaultProjects();
 
   // 5. Create HTTP Server around Express app
   const server = http.createServer(app);

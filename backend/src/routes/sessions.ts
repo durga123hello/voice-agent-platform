@@ -16,8 +16,16 @@ const getTenantId = (req: Request) => (req as any).tenantId || DEFAULT_TENANT_ID
 // Fetch all sessions: GET /api/sessions
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const tenantId = getTenantId(req);
+    const { projectId } = req.query;
+
+    let whereClause: any = { project: { tenantId } };
+    if (projectId && typeof projectId === 'string') {
+      whereClause = { projectId, project: { tenantId } };
+    }
+
     const sessions = await prisma.session.findMany({
-      where: { tenantId: getTenantId(req) },
+      where: whereClause,
       orderBy: { startedAt: 'desc' },
       include: {
         agentConfigVersion: {
@@ -38,7 +46,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       endedAt: s.endedAt,
       status: s.status,
       summary: s.summary,
-      tenantId: s.tenantId,
+      projectId: s.projectId,
       agentConfig: {
         name: s.agentConfigVersion.agentConfig.name
       }
@@ -70,10 +78,15 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       where: {
         agentConfigId,
         agentConfig: {
-          tenantId: getTenantId(req)
+          project: {
+            tenantId: getTenantId(req)
+          }
         }
       },
-      orderBy: { version: 'desc' }
+      orderBy: { version: 'desc' },
+      include: {
+        agentConfig: true
+      }
     });
 
     if (!latestVersion) {
@@ -86,7 +99,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     // Create session in database linking to latest version
     const session = await prisma.session.create({
       data: {
-        tenantId: getTenantId(req),
+        projectId: latestVersion.agentConfig.projectId,
         agentConfigVersionId: latestVersion.id,
         status: 'active',
         transport: resolvedTransport,
@@ -139,10 +152,15 @@ router.post('/outbound', async (req: Request, res: Response, next: NextFunction)
       where: {
         agentConfigId,
         agentConfig: {
-          tenantId: getTenantId(req)
+          project: {
+            tenantId: getTenantId(req)
+          }
         }
       },
-      orderBy: { version: 'desc' }
+      orderBy: { version: 'desc' },
+      include: {
+        agentConfig: true
+      }
     });
 
     if (!latestVersion) {
@@ -190,7 +208,7 @@ router.post('/outbound', async (req: Request, res: Response, next: NextFunction)
     // Create session in database
     session = await prisma.session.create({
       data: {
-        tenantId: getTenantId(req),
+        projectId: latestVersion.agentConfig.projectId,
         agentConfigVersionId: latestVersion.id,
         status: 'active',
         transport: 'plivo',
@@ -321,9 +339,9 @@ router.get('/:id/transcript', async (req: Request, res: Response, next: NextFunc
   try {
     const { id } = req.params;
 
-    // Verify session belongs to default tenant
+    // Verify session belongs to default tenant's project
     const session = await prisma.session.findFirst({
-      where: { id, tenantId: getTenantId(req) }
+      where: { id, project: { tenantId: getTenantId(req) } }
     });
 
     if (!session) {
@@ -383,9 +401,9 @@ router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => 
       return;
     }
 
-    // Verify session belongs to tenant
+    // Verify session belongs to tenant's project
     const existing = await prisma.session.findFirst({
-      where: { id, tenantId: getTenantId(req) }
+      where: { id, project: { tenantId: getTenantId(req) } }
     });
 
     if (!existing) {
@@ -439,9 +457,9 @@ router.post('/:id/end', async (req: Request, res: Response, next: NextFunction) 
   try {
     const { id } = req.params;
 
-    // Verify session exists and belongs to tenant
+    // Verify session exists and belongs to tenant's project
     const session = await prisma.session.findFirst({
-      where: { id, tenantId: getTenantId(req) }
+      where: { id, project: { tenantId: getTenantId(req) } }
     });
 
     if (!session) {
@@ -472,7 +490,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const session = await prisma.session.findFirst({
-      where: { id, tenantId: getTenantId(req) },
+      where: { id, project: { tenantId: getTenantId(req) } },
       include: {
         agentConfigVersion: {
           include: {
@@ -495,7 +513,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
     res.json({
       id: session.id,
-      tenantId: session.tenantId,
+      projectId: session.projectId,
       status: session.status,
       transport: session.transport,
       phoneNumber: session.phoneNumber,

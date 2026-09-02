@@ -11,13 +11,26 @@ const getTenantId = (req: Request) => (req as any).tenantId || DEFAULT_TENANT_ID
 
 async function getUserIdForTenant(tenantId: string): Promise<string> {
   if (tenantId === DEFAULT_TENANT_ID) return DEFAULT_USER_ID;
-  const user = await prisma.user.findFirst({ where: { tenantId } });
-  if (user) return user.id;
+  const member = await prisma.tenantMember.findFirst({
+    where: { tenantId },
+    include: { user: true }
+  });
+  if (member) return member.userId;
+
+  const firstUser = await prisma.user.findFirst();
+  if (firstUser) return firstUser.id;
+
   const dummy = await prisma.user.create({
     data: {
       email: `system-${tenantId}@voiceplatform.com`,
-      passwordHash: 'dummy',
-      tenantId
+      passwordHash: 'dummy'
+    }
+  });
+  await prisma.tenantMember.create({
+    data: {
+      userId: dummy.id,
+      tenantId,
+      role: 'member'
     }
   });
   return dummy.id;
@@ -64,7 +77,8 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
       interviewDurationMinutes,
       uploadedQuestions,
       behaviorSettings,
-      recordingEnabled
+      recordingEnabled,
+      projectId: bodyProjectId
     } = req.body;
 
     // Validate required fields
@@ -89,13 +103,29 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
     }
 
     const tenantId = getTenantId(req);
-    const userId = await getUserIdForTenant(tenantId);
+    const userId = (req as any).userId || (await getUserIdForTenant(tenantId));
+
+    let projectId = (req as any).projectId || bodyProjectId;
+    if (!projectId) {
+      const firstProj = await prisma.project.findFirst({ where: { tenantId } });
+      if (!firstProj) {
+        res.status(400).json({ error: 'No projects found. Create a project first.' });
+        return;
+      }
+      projectId = firstProj.id;
+    } else {
+      const proj = await prisma.project.findFirst({ where: { id: projectId, tenantId } });
+      if (!proj) {
+        res.status(404).json({ error: 'Project not found or unauthorized' });
+        return;
+      }
+    }
 
     const result = await prisma.$transaction(async (tx: any) => {
       // Create parent agent config
       const parent = await tx.agentConfig.create({
         data: {
-          tenantId,
+          projectId,
           userId,
           name: name || null
         }
@@ -147,8 +177,16 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 // 2. Get all agent configs: GET /api/agent-configs
 router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const tenantId = getTenantId(req);
+    const { projectId } = req.query;
+
+    let whereClause: any = { project: { tenantId } };
+    if (projectId && typeof projectId === 'string') {
+      whereClause = { projectId, project: { tenantId } };
+    }
+
     const configs = await prisma.agentConfig.findMany({
-      where: { tenantId: getTenantId(req) },
+      where: whereClause,
       include: {
         versions: {
           orderBy: { version: 'desc' },
@@ -168,7 +206,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const config = await prisma.agentConfig.findFirst({
-      where: { id, tenantId: getTenantId(req) },
+      where: { id, project: { tenantId: getTenantId(req) } },
       include: {
         versions: {
           orderBy: { version: 'desc' },
@@ -208,7 +246,7 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
     // Verify config exists and fetch latest version
     const config = await prisma.agentConfig.findFirst({
-      where: { id, tenantId: getTenantId(req) },
+      where: { id, project: { tenantId: getTenantId(req) } },
       include: {
         versions: {
           orderBy: { version: 'desc' },
@@ -322,7 +360,7 @@ router.delete('/:id', async (req: Request, res: Response, next: NextFunction) =>
 
     // Verify config exists
     const existing = await prisma.agentConfig.findFirst({
-      where: { id, tenantId: getTenantId(req) }
+      where: { id, project: { tenantId: getTenantId(req) } }
     });
     if (!existing) {
       res.status(404).json({ error: 'Agent config not found.' });

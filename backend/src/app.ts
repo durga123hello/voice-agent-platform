@@ -11,6 +11,8 @@ import authRouter from './routes/auth';
 import assistantsRouter from './routes/assistants';
 import callsRouter from './routes/calls';
 import telephonyWebhooksRouter from './routes/telephonyWebhooks';
+import projectsRouter from './routes/projects';
+import membersRouter from './routes/members';
 import prisma from './db/client';
 
 import { rateLimiter } from './utils/rateLimiter';
@@ -31,10 +33,14 @@ app.use('/api/credentials', credentialsRouter);
 app.use('/api/sessions', sessionsRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/auth', authRouter);
+app.use('/api/members', membersRouter);
 app.use('/api/v1/assistants', assistantsRouter);
+app.use('/v1/assistants', assistantsRouter); // Standard v1 spec alias
 app.use('/api/calls', callsRouter);
 app.use('/api/telephony', telephonyWebhooksRouter);
+app.use('/api/projects', projectsRouter);
 app.use('/api', apiKeysRouter);
+app.use('/v1/api-keys', apiKeysRouter); // Standard v1 spec alias
 
 // XML Answer Endpoint for Plivo
 app.post('/api/telephony/plivo/answer/:sessionId', async (req: Request, res: Response) => {

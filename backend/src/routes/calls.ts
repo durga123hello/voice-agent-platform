@@ -42,10 +42,15 @@ router.post('/outbound', async (req: Request, res: Response, next: NextFunction)
       where: {
         agentConfigId: agentId,
         agentConfig: {
-          tenantId: getTenantId(req)
+          project: {
+            tenantId: getTenantId(req)
+          }
         }
       },
-      orderBy: { version: 'desc' }
+      orderBy: { version: 'desc' },
+      include: {
+        agentConfig: true
+      }
     });
 
     if (!latestVersion) {
@@ -56,7 +61,7 @@ router.post('/outbound', async (req: Request, res: Response, next: NextFunction)
     // 3. Create postgres session record with status "initiating"
     const session = await prisma.session.create({
       data: {
-        tenantId: getTenantId(req),
+        projectId: latestVersion.agentConfig.projectId,
         agentConfigVersionId: latestVersion.id,
         status: 'initiating',
         transport: 'msg91',
