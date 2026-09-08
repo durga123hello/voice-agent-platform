@@ -93,11 +93,17 @@ async function seedDefaultUser() {
       const hashed = await bcrypt.hash('secret-password', 10);
       user = await prisma.user.create({
         data: {
-          id: DEFAULT_USER_ID,
           email: 'support@swarmx.ai',
-          passwordHash: hashed
+          officialEmail: 'support@swarmx.ai',
+          firstName: 'Default',
+          lastName: 'Developer',
+          passwordHash: hashed,
+          tenantId: DEFAULT_TENANT_ID
         }
       });
+      console.log(`Successfully seeded default user ${user.email} (Tenant ID: ${DEFAULT_TENANT_ID})`);
+    } else {
+      console.log('Default user already exists.');
     }
 
     // 4. Ensure Organization Membership link exists

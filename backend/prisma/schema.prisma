@@ -17,20 +17,40 @@ model Tenant {
   updatedAt     DateTime?      @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
   members       TenantMember[]
   projects      Project[]
+  users         User[]
   otpCodes      OtpCode[]
 
   @@map("tenants")
 }
 
 model User {
-  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email          String          @unique
-  passwordHash   String          @map("password_hash")
-  createdAt      DateTime?       @default(now()) @map("created_at") @db.Timestamptz
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String?         @map("tenant_id") @db.Uuid
+  email           String?         @unique
+  officialEmail   String?         @unique @map("official_email")
+  firstName       String?         @map("first_name")
+  lastName        String?         @map("last_name")
+  employeeId      String?         @map("employee_id")
+  personalEmail   String?         @map("personal_email")
+  phoneNumber     String?         @map("phone_number")
+  dateOfBirth     String?         @map("date_of_birth")
+  dateOfJoining   String?         @map("date_of_joining")
+  nationality     String?         @map("nationality")
+  gender          String?         @map("gender")
+  role            String          @default("member") @map("role")
+  status          String          @default("active") @map("status")
+  profilePhotoUrl String?         @map("profile_photo_url")
+  signatureUrl    String?         @map("signature_url")
+  passwordHash    String?         @map("password_hash")
+  createdAt       DateTime?       @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime?       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant         Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   memberships    TenantMember[]
   apiCredentials ApiCredential[]
   agentConfigs   AgentConfig[]
 
+  @@index([tenantId])
   @@map("users")
 }
 
@@ -99,7 +119,6 @@ model Provider {
 
   @@map("providers")
 }
-
 model ApiCredential {
   id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   userId       String    @map("user_id") @db.Uuid

@@ -1,0 +1,16 @@
+const fs = require('fs');
+const path = require('path');
+
+const sigPath = path.join(__dirname, '../services/signaling.ts');
+if (fs.existsSync(sigPath)) {
+  const content = fs.readFileSync(sigPath, 'utf8');
+  const lines = content.split('\n');
+  console.log('--- ALL PLACES WITH chunksLog OR responsesLog OR deepgramOpenTime ---');
+  lines.forEach((line, idx) => {
+    if (line.includes('chunksLog') || line.includes('responsesLog') || line.includes('deepgramOpenTime') || line.includes('totalBytesSent')) {
+      console.log(`${idx + 1}: ${line.trim()}`);
+    }
+  });
+} else {
+  console.log('File does not exist');
+}

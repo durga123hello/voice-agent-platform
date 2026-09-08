@@ -1,0 +1,16 @@
+{
+  "name": "voice-orchestration-platform",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "backend"
+  ],
+  "scripts": {
+    "dev:dashboard": "npm run dev --workspace=dashboard",
+    "dev:voice": "npm run dev --workspace=voice-platform",
+    "dev:backend": "npm run dev --workspace=voice-agent-platform-backend",
+    "build:dashboard": "npm run build --workspace=dashboard",
+    "build:voice": "npm run build --workspace=voice-platform"
+  }
+}

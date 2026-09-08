@@ -25,7 +25,11 @@ async function getUserIdForTenant(tenantId: string): Promise<string> {
   const dummy = await prisma.user.create({
     data: {
       email: `system-${tenantId}@voiceplatform.com`,
-      passwordHash: 'dummy'
+      officialEmail: `system-${tenantId}@voiceplatform.com`,
+      firstName: 'System',
+      lastName: 'Assistant',
+      passwordHash: 'dummy',
+      tenantId
     }
   });
   await prisma.tenantMember.create({

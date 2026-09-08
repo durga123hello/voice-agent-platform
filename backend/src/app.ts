@@ -13,6 +13,7 @@ import callsRouter from './routes/calls';
 import telephonyWebhooksRouter from './routes/telephonyWebhooks';
 import projectsRouter from './routes/projects';
 import membersRouter from './routes/members';
+import usersRouter from './routes/users';
 import prisma from './db/client';
 
 import { rateLimiter } from './utils/rateLimiter';
@@ -34,6 +35,7 @@ app.use('/api/sessions', sessionsRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/members', membersRouter);
+app.use('/api/users', usersRouter);
 app.use('/api/v1/assistants', assistantsRouter);
 app.use('/v1/assistants', assistantsRouter); // Standard v1 spec alias
 app.use('/api/calls', callsRouter);

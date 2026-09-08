@@ -11,15 +11,16 @@ export function sessionAuth(req: Request, res: Response, next: NextFunction) {
 
   const token = authHeader.substring(7).trim();
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { tenantId: string; userId?: string; email: string };
+    const payload = jwt.verify(token, JWT_SECRET) as { tenantId: string; userId?: string; email: string; role?: string };
     if (!payload || !payload.tenantId) {
       return res.status(401).json({ error: 'Unauthorized: Invalid token payload' });
     }
 
-    // Attach tenantId and userId to request context
+    // Attach session context securely to request object
     (req as any).tenantId = payload.tenantId;
     (req as any).userId = payload.userId;
     (req as any).userEmail = payload.email;
+    (req as any).userRole = payload.role;
 
     next();
   } catch (error) {

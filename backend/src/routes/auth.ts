@@ -114,6 +114,31 @@ router.post('/verify-otp', async (req: Request, res: Response, next: NextFunctio
       data: { used: true }
     });
 
+    // Helper to get or create org-scoped user record
+    const getOrCreateUserForTenant = async (tenantId: string, email: string, name?: string, role: string = 'owner') => {
+      let user = await prisma.user.findUnique({
+        where: { officialEmail: email }
+      });
+      if (!user) {
+        const namePart = name || email.split('@')[0];
+        const nameTokens = namePart.trim().split(' ');
+        const firstName = nameTokens[0] || 'User';
+        const lastName = nameTokens.slice(1).join(' ') || '';
+
+        user = await prisma.user.create({
+          data: {
+            tenantId,
+            officialEmail: email,
+            firstName,
+            lastName: lastName || undefined,
+            role,
+            status: 'active'
+          }
+        });
+      }
+      return user;
+    };
+
     // Verify tenant
     const tenant = await prisma.tenant.update({
       where: { contactEmail: trimmedEmail },
@@ -121,15 +146,21 @@ router.post('/verify-otp', async (req: Request, res: Response, next: NextFunctio
     });
 
     // Create or retrieve independent User record
-    let user = await prisma.user.findUnique({
-      where: { email: trimmedEmail }
+    let user = await prisma.user.findFirst({
+      where: { OR: [{ email: trimmedEmail }, { officialEmail: trimmedEmail }] }
     });
 
     if (!user) {
       const dummyPassword = await bcrypt.hash(crypto.randomBytes(16).toString('hex'), 10);
       user = await prisma.user.create({
         data: {
+          tenantId: tenant.id,
           email: trimmedEmail,
+          officialEmail: trimmedEmail,
+          firstName: trimmedEmail.split('@')[0],
+          lastName: 'User',
+          role: 'owner',
+          status: 'active',
           passwordHash: dummyPassword
         }
       });
@@ -164,7 +195,7 @@ router.post('/verify-otp', async (req: Request, res: Response, next: NextFunctio
 
     // Issue JWT token with userId and active tenantId
     const token = jwt.sign(
-      { userId: user.id, tenantId: tenant.id, email: user.email },
+      { userId: user.id, tenantId: tenant.id, email: user.email || user.officialEmail, role: user.role || 'owner' },
       JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -174,9 +205,20 @@ router.post('/verify-otp', async (req: Request, res: Response, next: NextFunctio
       token,
       user: {
         id: user.id,
-        email: user.email
+        tenantId: user.tenantId || tenant.id,
+        email: user.email || user.officialEmail,
+        officialEmail: user.officialEmail || user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role || 'owner',
+        status: user.status || 'active'
       },
       activeTenant: {
+        id: tenant.id,
+        name: tenant.name,
+        contactEmail: tenant.contactEmail
+      },
+      tenant: {
         id: tenant.id,
         name: tenant.name,
         contactEmail: tenant.contactEmail
@@ -208,7 +250,7 @@ router.post('/request-login-otp', emailRateLimiter, async (req: Request, res: Re
     const trimmedEmail = email.trim().toLowerCase();
 
     // Check if user or tenant exists
-    const user = await prisma.user.findUnique({ where: { email: trimmedEmail } });
+    const user = await prisma.user.findFirst({ where: { OR: [{ email: trimmedEmail }, { officialEmail: trimmedEmail }] } });
     const tenant = await prisma.tenant.findUnique({ where: { contactEmail: trimmedEmail } });
 
     const responsePayload: any = {
@@ -225,7 +267,7 @@ router.post('/request-login-otp', emailRateLimiter, async (req: Request, res: Re
           email: trimmedEmail,
           codeHash,
           purpose: 'login',
-          expiresAt: new Date(Date.now() + 10 * 60 * 1000) // 10 mins TTL
+          expiresAt: new Date(Date.now() + 10 * 60 * 1000)
         }
       });
 
@@ -271,22 +313,26 @@ router.post('/verify-login-otp', async (req: Request, res: Response, next: NextF
       return;
     }
 
-    // Mark OTP as used
     await prisma.otpCode.update({
       where: { id: otp.id },
       data: { used: true }
     });
 
-    // Find or create user
-    let user = await prisma.user.findUnique({
-      where: { email: trimmedEmail }
+    let user = await prisma.user.findFirst({
+      where: { OR: [{ email: trimmedEmail }, { officialEmail: trimmedEmail }] }
     });
 
     if (!user) {
       const dummyPassword = await bcrypt.hash(crypto.randomBytes(16).toString('hex'), 10);
+      const namePart = trimmedEmail.split('@')[0];
       user = await prisma.user.create({
         data: {
           email: trimmedEmail,
+          officialEmail: trimmedEmail,
+          firstName: namePart.charAt(0).toUpperCase() + namePart.slice(1),
+          lastName: 'User',
+          role: 'owner',
+          status: 'active',
           passwordHash: dummyPassword
         }
       });
@@ -298,33 +344,35 @@ router.post('/verify-login-otp', async (req: Request, res: Response, next: NextF
       include: { tenant: true }
     });
 
-    // If no membership exists yet, check if there's a legacy tenant matching contactEmail
     if (memberships.length === 0) {
-      const matchedTenant = await prisma.tenant.findUnique({
+      let matchedTenant = await prisma.tenant.findUnique({
         where: { contactEmail: trimmedEmail }
       });
-      if (matchedTenant) {
-        const newMember = await prisma.tenantMember.create({
+      if (!matchedTenant) {
+        const namePart = trimmedEmail.split('@')[0];
+        const orgName = `${namePart.charAt(0).toUpperCase() + namePart.slice(1)} Org`;
+        matchedTenant = await prisma.tenant.create({
           data: {
-            userId: user.id,
-            tenantId: matchedTenant.id,
-            role: 'owner'
-          },
-          include: { tenant: true }
+            name: orgName,
+            contactEmail: trimmedEmail,
+            emailVerified: true
+          }
         });
-        memberships = [newMember];
       }
-    }
-
-    if (memberships.length === 0) {
-      res.status(404).json({ error: 'No organizations found for this account. Please sign up first.' });
-      return;
+      const newMember = await prisma.tenantMember.create({
+        data: {
+          userId: user.id,
+          tenantId: matchedTenant.id,
+          role: 'owner'
+        },
+        include: { tenant: true }
+      });
+      memberships = [newMember];
     }
 
     const activeMembership = memberships[0];
     const activeTenant = activeMembership.tenant;
 
-    // Ensure email is verified
     if (!activeTenant.emailVerified) {
       await prisma.tenant.update({
         where: { id: activeTenant.id },
@@ -343,9 +391,9 @@ router.post('/verify-login-otp', async (req: Request, res: Response, next: NextF
       });
     }
 
-    // Issue JWT token scoped to active tenant
+    // Issue JWT token containing tenantId AND userId
     const token = jwt.sign(
-      { userId: user.id, tenantId: activeTenant.id, email: user.email },
+      { userId: user.id, tenantId: activeTenant.id, email: user.officialEmail || user.email, role: user.role || 'owner' },
       JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -354,9 +402,20 @@ router.post('/verify-login-otp', async (req: Request, res: Response, next: NextF
       token,
       user: {
         id: user.id,
-        email: user.email
+        tenantId: activeTenant.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email || user.officialEmail,
+        officialEmail: user.officialEmail || user.email,
+        role: user.role || 'owner',
+        status: user.status || 'active'
       },
       activeTenant: {
+        id: activeTenant.id,
+        name: activeTenant.name,
+        contactEmail: activeTenant.contactEmail
+      },
+      tenant: {
         id: activeTenant.id,
         name: activeTenant.name,
         contactEmail: activeTenant.contactEmail
@@ -405,7 +464,7 @@ router.post('/switch-tenant', sessionAuth, async (req: Request, res: Response, n
 
     // Issue new JWT token scoped to chosen organization
     const token = jwt.sign(
-      { userId, tenantId: membership.tenantId, email: user?.email },
+      { userId, tenantId: membership.tenantId, email: user?.email || user?.officialEmail },
       JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -417,6 +476,84 @@ router.post('/switch-tenant', sessionAuth, async (req: Request, res: Response, n
         id: membership.tenant.id,
         name: membership.tenant.name,
         role: membership.role
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// 6. Dashboard Direct Session Endpoint (for seamless passwordless OTP & signup)
+router.post('/dashboard-session', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { email, fullName, orgName } = req.body;
+    if (!email) {
+      res.status(400).json({ error: 'email is required' });
+      return;
+    }
+
+    const trimmedEmail = email.trim().toLowerCase();
+    let tenant = await prisma.tenant.findUnique({
+      where: { contactEmail: trimmedEmail }
+    });
+
+    if (!tenant) {
+      const namePart = trimmedEmail.split('@')[0];
+      const derivedOrgName = orgName || `${namePart.charAt(0).toUpperCase() + namePart.slice(1)} Corp`;
+      tenant = await prisma.tenant.create({
+        data: {
+          name: derivedOrgName,
+          contactEmail: trimmedEmail,
+          emailVerified: true
+        }
+      });
+    }
+
+    let user = await prisma.user.findFirst({
+      where: { OR: [{ email: trimmedEmail }, { officialEmail: trimmedEmail }] }
+    });
+
+    if (!user) {
+      const nameToUse = fullName || trimmedEmail.split('@')[0];
+      const nameTokens = nameToUse.trim().split(' ');
+      const firstName = nameTokens[0] || 'User';
+      const lastName = nameTokens.slice(1).join(' ') || 'Admin';
+
+      user = await prisma.user.create({
+        data: {
+          tenantId: tenant.id,
+          email: trimmedEmail,
+          officialEmail: trimmedEmail,
+          firstName,
+          lastName,
+          role: 'owner',
+          status: 'active'
+        }
+      });
+    }
+
+    const token = jwt.sign(
+      { userId: user.id, tenantId: tenant.id, email: user.officialEmail || user.email, role: user.role || 'owner' },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        tenantId: user.tenantId || tenant.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        officialEmail: user.officialEmail || user.email,
+        email: user.email || user.officialEmail,
+        role: user.role || 'owner',
+        status: user.status || 'active'
+      },
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+        contactEmail: tenant.contactEmail
       }
     });
   } catch (error) {
