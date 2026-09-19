@@ -14,6 +14,7 @@ import {
 import { User, UserStatus } from "../../types/user";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
+import { usePermissions } from "../../context/permissions-context";
 
 interface UsersTableProps {
   users: User[];
@@ -28,6 +29,7 @@ export function UsersTable({
   onDeleteUser,
   onViewUser,
 }: UsersTableProps) {
+  const { can } = usePermissions();
 
   const getInitials = (name?: string) => {
     if (!name || typeof name !== "string") return "VX";
@@ -144,7 +146,12 @@ export function UsersTable({
                 Email
               </th>
 
-              {/* 6. SCROLLING MIDDLE: Joined Date Column */}
+              {/* 6. SCROLLING MIDDLE: Manager Column */}
+              <th scope="col" className="py-3.5 px-4 min-w-[160px] border-b border-border bg-slate-50/80 dark:bg-slate-900/60">
+                Manager
+              </th>
+
+              {/* 7. SCROLLING MIDDLE: Joined Date Column */}
               <th scope="col" className="py-3.5 px-4 min-w-[160px] border-b border-border bg-slate-50/80 dark:bg-slate-900/60">
                 Joined Date
               </th>
@@ -215,7 +222,14 @@ export function UsersTable({
                   </div>
                 </td>
 
-                {/* 6. SCROLLING MIDDLE: Joined Date */}
+                {/* 6. SCROLLING MIDDLE: Manager */}
+                <td className="py-3 px-4 text-muted-foreground whitespace-nowrap min-w-[160px] border-b border-border bg-card group-hover:bg-muted/40 transition-colors">
+                  <span className="text-xs font-medium text-foreground/90">
+                    {user.manager?.name || (user as any).managerName || "—"}
+                  </span>
+                </td>
+
+                {/* 7. SCROLLING MIDDLE: Joined Date */}
                 <td className="py-3 px-4 text-muted-foreground whitespace-nowrap min-w-[160px] border-b border-border bg-card group-hover:bg-muted/40 transition-colors">
                   <div className="flex items-center gap-1 text-[11px]">
                     <Calendar className="h-3 w-3 text-muted-foreground/60 shrink-0" />
@@ -240,30 +254,34 @@ export function UsersTable({
                     </Button>
 
                     {/* Edit Button */}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      asChild
-                      className="h-7 w-7 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10"
-                      title="Edit user"
-                    >
-                      <Link href={`/users/create?edit=${user.id}`}>
-                        <Pencil className="h-3.5 w-3.5" />
-                        <span className="sr-only">Edit</span>
-                      </Link>
-                    </Button>
+                    {can('users', 'edit') && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        asChild
+                        className="h-7 w-7 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10"
+                        title="Edit user"
+                      >
+                        <Link href={`/users/create?edit=${user.id}`}>
+                          <Pencil className="h-3.5 w-3.5" />
+                          <span className="sr-only">Edit</span>
+                        </Link>
+                      </Button>
+                    )}
 
                     {/* Delete Button (Destructive red) */}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10"
-                      onClick={() => onDeleteUser && onDeleteUser(user.id)}
-                      title="Delete user"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      <span className="sr-only">Delete</span>
-                    </Button>
+                    {can('users', 'delete') && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10"
+                        onClick={() => onDeleteUser && onDeleteUser(user.id)}
+                        title="Delete user"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span className="sr-only">Delete</span>
+                      </Button>
+                    )}
                   </div>
                 </td>
 

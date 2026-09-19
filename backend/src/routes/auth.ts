@@ -493,25 +493,42 @@ router.post('/dashboard-session', async (req: Request, res: Response, next: Next
     }
 
     const trimmedEmail = email.trim().toLowerCase();
-    let tenant = await prisma.tenant.findUnique({
-      where: { contactEmail: trimmedEmail }
-    });
 
-    if (!tenant) {
-      const namePart = trimmedEmail.split('@')[0];
-      const derivedOrgName = orgName || `${namePart.charAt(0).toUpperCase() + namePart.slice(1)} Corp`;
-      tenant = await prisma.tenant.create({
-        data: {
-          name: derivedOrgName,
-          contactEmail: trimmedEmail,
-          emailVerified: true
-        }
-      });
-    }
-
+    // 1. First search for existing user across database (case-insensitive)
     let user = await prisma.user.findFirst({
-      where: { OR: [{ email: trimmedEmail }, { officialEmail: trimmedEmail }] }
+      where: {
+        OR: [
+          { email: { equals: trimmedEmail, mode: 'insensitive' } },
+          { officialEmail: { equals: trimmedEmail, mode: 'insensitive' } },
+        ],
+      },
     });
+
+    let tenantId = user?.tenantId || null;
+    let tenant = null;
+
+    if (tenantId) {
+      tenant = await prisma.tenant.findUnique({
+        where: { id: tenantId }
+      });
+    } else {
+      tenant = await prisma.tenant.findUnique({
+        where: { contactEmail: trimmedEmail }
+      });
+
+      if (!tenant) {
+        const namePart = trimmedEmail.split('@')[0];
+        const derivedOrgName = orgName || `${namePart.charAt(0).toUpperCase() + namePart.slice(1)} Corp`;
+        tenant = await prisma.tenant.create({
+          data: {
+            name: derivedOrgName,
+            contactEmail: trimmedEmail,
+            emailVerified: true
+          }
+        });
+      }
+      tenantId = tenant.id;
+    }
 
     if (!user) {
       const nameToUse = fullName || trimmedEmail.split('@')[0];
@@ -521,7 +538,7 @@ router.post('/dashboard-session', async (req: Request, res: Response, next: Next
 
       user = await prisma.user.create({
         data: {
-          tenantId: tenant.id,
+          tenantId: tenantId,
           email: trimmedEmail,
           officialEmail: trimmedEmail,
           firstName,
@@ -533,7 +550,7 @@ router.post('/dashboard-session', async (req: Request, res: Response, next: Next
     }
 
     const token = jwt.sign(
-      { userId: user.id, tenantId: tenant.id, email: user.officialEmail || user.email, role: user.role || 'owner' },
+      { userId: user.id, tenantId: user.tenantId || tenantId, email: user.officialEmail || user.email, role: user.role || 'owner' },
       JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -542,7 +559,7 @@ router.post('/dashboard-session', async (req: Request, res: Response, next: Next
       token,
       user: {
         id: user.id,
-        tenantId: user.tenantId || tenant.id,
+        tenantId: user.tenantId || tenantId,
         firstName: user.firstName,
         lastName: user.lastName,
         officialEmail: user.officialEmail || user.email,
@@ -551,9 +568,9 @@ router.post('/dashboard-session', async (req: Request, res: Response, next: Next
         status: user.status || 'active'
       },
       tenant: {
-        id: tenant.id,
-        name: tenant.name,
-        contactEmail: tenant.contactEmail
+        id: tenantId,
+        name: tenant?.name || 'Organization',
+        contactEmail: tenant?.contactEmail || user.officialEmail || user.email
       }
     });
   } catch (error) {
@@ -606,5 +623,85 @@ router.get('/me', sessionAuth, async (req: Request, res: Response, next: NextFun
     next(error);
   }
 });
+
+/**
+ * 7. Get current user's resolved permissions list: GET /api/auth/me/permissions
+ */
+const getMyPermissionsHandler = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const tenantId = (req as any).tenantId;
+    const userRoleName = (req as any).userRole || 'Admin';
+
+    const lowerRole = (userRoleName || '').toLowerCase();
+    const isAdmin =
+      lowerRole === 'admin' ||
+      lowerRole === 'owner' ||
+      lowerRole === 'administrator' ||
+      lowerRole === 'developer';
+
+    if (isAdmin) {
+      const allPermissions = await prisma.permission.findMany({
+        where: {
+          OR: [
+            { isSystemPermission: true },
+            { tenantId: null },
+            { tenantId: tenantId }
+          ]
+        }
+      });
+      const mapped = allPermissions.map((p) => ({
+        id: p.id,
+        module: p.module,
+        action: p.action,
+        key: p.key || `${p.module}:${p.action}`,
+        label: p.label
+      }));
+      res.json({
+        role: userRoleName,
+        isAdmin: true,
+        permissions: mapped,
+        permissionKeys: mapped.map((p) => p.key)
+      });
+      return;
+    }
+
+    const role = await prisma.role.findFirst({
+      where: {
+        OR: [
+          { name: { equals: userRoleName, mode: 'insensitive' }, tenantId },
+          { name: { equals: userRoleName, mode: 'insensitive' }, isSystemRole: true }
+        ]
+      },
+      include: {
+        rolePermissions: {
+          include: {
+            permission: true
+          }
+        }
+      }
+    });
+
+    const activePermissions = role?.rolePermissions
+      .filter((rp) => rp.permission)
+      .map((rp) => ({
+        id: rp.permission.id,
+        module: rp.permission.module,
+        action: rp.permission.action,
+        key: rp.permission.key || `${rp.permission.module}:${rp.permission.action}`,
+        label: rp.permission.label
+      })) || [];
+
+    res.json({
+      role: userRoleName,
+      isAdmin: false,
+      permissions: activePermissions,
+      permissionKeys: activePermissions.map((p) => p.key)
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+router.get('/me/permissions', sessionAuth, getMyPermissionsHandler);
 
 export default router;

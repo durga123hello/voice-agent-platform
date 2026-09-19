@@ -1,5 +1,6 @@
 import React, { Suspense } from "react";
 import { ProjectForm } from "../../../components/projects/ProjectForm";
+import { RouteGuard } from "../../../components/shell/RouteGuard";
 
 export const metadata = {
   title: "Create Project — vopx",
@@ -8,8 +9,10 @@ export const metadata = {
 
 export default function CreateProjectPage() {
   return (
-    <Suspense fallback={<div className="p-8 text-xs text-muted-foreground animate-pulse">Loading project configuration form...</div>}>
-      <ProjectForm />
-    </Suspense>
+    <RouteGuard module="projects" action="create">
+      <Suspense fallback={<div className="p-8 text-xs text-muted-foreground animate-pulse">Loading project configuration form...</div>}>
+        <ProjectForm />
+      </Suspense>
+    </RouteGuard>
   );
 }

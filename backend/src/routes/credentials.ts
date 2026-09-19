@@ -2,12 +2,16 @@ import { Router, Request, Response, NextFunction } from 'express';
 import prisma from '../db/client';
 import { DEFAULT_USER_ID } from '../index';
 import { encrypt } from '../utils/crypto';
+import { sessionAuth } from '../middleware/sessionAuth';
+import { requirePermission } from '../middleware/requirePermission';
 
 const router = Router();
+router.use(sessionAuth);
+
 const VALID_PROVIDERS = ['deepgram', 'openai'];
 
 // 1. Save or Update (Upsert) credentials: POST /api/credentials
-router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requirePermission('settings:edit'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { provider, key } = req.body;
 
@@ -57,7 +61,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 });
 
 // 2. Fetch list of saved credentials: GET /api/credentials
-router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', requirePermission('settings:view'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const credentials = await prisma.apiCredential.findMany({
       where: { userId: DEFAULT_USER_ID },

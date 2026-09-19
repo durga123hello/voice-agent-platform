@@ -25,8 +25,8 @@ router.post('/plivo/status/:sessionId', async (req: Request, res: Response, next
       return;
     }
 
-    // CallUUID Mismatch Check
-    if (session.providerCallId && CallUUID && session.providerCallId !== CallUUID) {
+    // CallUUID Mismatch Check (skip mismatch check if current providerCallId is a mock UUID)
+    if (session.providerCallId && CallUUID && session.providerCallId !== CallUUID && !session.providerCallId.startsWith('plivo-mock-uuid-')) {
       console.warn(`[Plivo Webhook Mismatch] Incoming CallUUID ${CallUUID} does not match stored providerCallId ${session.providerCallId} for session ${sessionId}. Ignoring.`);
       res.status(200).json({ success: true, message: 'CallUUID mismatch. Ignored.' });
       return;

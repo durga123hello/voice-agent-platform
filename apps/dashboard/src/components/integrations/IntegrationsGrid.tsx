@@ -6,6 +6,7 @@ import {
   Mic, 
   Volume2, 
   Cpu, 
+  Phone,
   Layers, 
   Activity, 
   Check, 
@@ -25,6 +26,8 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 
+import { INITIAL_MOCK_INTEGRATIONS } from "../../lib/mock-integrations";
+
 interface SelectedCombination {
   sttId?: string;
   ttsId?: string;
@@ -33,8 +36,8 @@ interface SelectedCombination {
 
 interface IntegrationsGridProps {
   integrations: Integration[];
-  selectedCombination: SelectedCombination;
-  onSelectProvider: (integration: Integration) => void;
+  selectedCombination?: SelectedCombination;
+  onSelectProvider?: (integration: Integration) => void;
   onDeleteIntegration?: (id: string) => void;
   onViewIntegration?: (integration: Integration) => void;
   activeCategoryFilter: string;
@@ -48,10 +51,19 @@ export function IntegrationsGrid({
   onViewIntegration,
   activeCategoryFilter,
 }: IntegrationsGridProps) {
+  // Use provided integrations or fallback to rich catalog if empty
+  const displayIntegrations =
+    integrations.length > 0
+      ? integrations
+      : INITIAL_MOCK_INTEGRATIONS.filter(
+          (i) => activeCategoryFilter === "ALL" || i.category === activeCategoryFilter
+        );
+
   // Categorize integrations
-  const sttIntegrations = integrations.filter((i) => i.category === "STT Agent");
-  const ttsIntegrations = integrations.filter((i) => i.category === "TTS Agent");
-  const llmIntegrations = integrations.filter((i) => i.category === "LLM Provider");
+  const sttIntegrations = displayIntegrations.filter((i) => i.category === "STT Agent");
+  const ttsIntegrations = displayIntegrations.filter((i) => i.category === "TTS Agent");
+  const llmIntegrations = displayIntegrations.filter((i) => i.category === "LLM Provider");
+  const telephonyIntegrations = displayIntegrations.filter((i) => i.category === "Mobile Telephony");
 
   const renderStatusBadge = (status: IntegrationStatus) => {
     switch (status) {
@@ -108,6 +120,12 @@ export function IntegrationsGrid({
             <Cpu className="h-4 w-4" />
           </div>
         );
+      case "Mobile Telephony":
+        return (
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20 shrink-0">
+            <Phone className="h-4 w-4" />
+          </div>
+        );
       default:
         return (
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted text-muted-foreground shrink-0">
@@ -118,6 +136,7 @@ export function IntegrationsGrid({
   };
 
   const isSelected = (item: Integration) => {
+    if (!selectedCombination) return false;
     if (item.category === "STT Agent") return selectedCombination.sttId === item.id;
     if (item.category === "TTS Agent") return selectedCombination.ttsId === item.id;
     if (item.category === "LLM Provider") return selectedCombination.llmId === item.id;
@@ -130,7 +149,13 @@ export function IntegrationsGrid({
     return (
       <div
         key={item.id}
-        onClick={() => onSelectProvider(item)}
+        onClick={() => {
+          if (onSelectProvider) {
+            onSelectProvider(item);
+          } else if (onViewIntegration) {
+            onViewIntegration(item);
+          }
+        }}
         className={`group relative flex flex-col justify-between rounded-xl border p-4 transition-all duration-200 cursor-pointer shadow-xs ${
           selected
             ? "border-teal-600 dark:border-teal-400 bg-teal-500/10 dark:bg-teal-950/40 ring-2 ring-teal-500/40 shadow-sm"
@@ -154,13 +179,9 @@ export function IntegrationsGrid({
 
             <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
               {/* Checkmark Indicator when Selected */}
-              {selected ? (
+              {selected && (
                 <div className="flex h-5 w-5 items-center justify-center rounded-full bg-teal-700 dark:bg-teal-500 text-white shadow-xs">
                   <Check className="h-3.5 w-3.5 stroke-[3]" />
-                </div>
-              ) : (
-                <div className="flex h-5 w-5 items-center justify-center rounded-full border border-border/80 group-hover:border-teal-500/60 opacity-0 group-hover:opacity-100 transition-all">
-                  <div className="h-2 w-2 rounded-full bg-teal-500/40" />
                 </div>
               )}
 
@@ -207,17 +228,22 @@ export function IntegrationsGrid({
             </div>
           </div>
 
-          {/* Latency Row */}
+          {/* Latency / Active Numbers Row */}
           {item.latency && (
             <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground mb-3 bg-muted/30 px-2 py-1 rounded-md border border-border/50 w-fit">
               <Activity className="h-3 w-3 text-teal-600 dark:text-teal-400 shrink-0" />
-              <span>Avg Latency: <strong className="font-semibold text-foreground">{item.latency}</strong></span>
+              <span>
+                {item.category === "Mobile Telephony" ? "Active Numbers: " : "Avg Latency: "}
+                <strong className="font-semibold text-foreground">{item.latency}</strong>
+              </span>
             </div>
           )}
 
-          {/* Available Models (Wrapped Pills) */}
+          {/* Available Models / Phone Numbers (Wrapped Pills) */}
           <div className="space-y-1 my-2">
-            <span className="text-[10px] uppercase font-bold text-muted-foreground/80 tracking-wider block">Available Models:</span>
+            <span className="text-[10px] uppercase font-bold text-muted-foreground/80 tracking-wider block">
+              {item.category === "Mobile Telephony" ? "Configured Numbers:" : "Available Models:"}
+            </span>
             <div className="flex flex-wrap gap-1">
               {item.availableModels.split(',').map((model, idx) => (
                 <span 
@@ -241,7 +267,7 @@ export function IntegrationsGrid({
               </span>
             ) : (
               <span className="text-[11px] font-medium text-muted-foreground group-hover:text-foreground transition-colors">
-                Click to select
+                Click to view details
               </span>
             )}
           </div>
@@ -274,7 +300,7 @@ export function IntegrationsGrid({
 
           {items.length > 0 && (
             <span className="text-xs text-muted-foreground">
-              Select 1 {categoryName} provider
+              {items.length} Available Providers
             </span>
           )}
         </div>
@@ -292,26 +318,6 @@ export function IntegrationsGrid({
       </div>
     );
   };
-
-  if (integrations.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card p-12 text-center">
-        <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-teal-700/10 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300 border border-teal-500/20 mb-3">
-          <Layers className="h-6 w-6" />
-        </div>
-        <h3 className="text-sm font-semibold text-foreground">No integrations found</h3>
-        <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-          No provider matches your filter criteria. Try clearing search filters or add a new provider integration.
-        </p>
-        <Button asChild size="sm" className="mt-4 gap-1.5 bg-teal-700 hover:bg-teal-800 text-white text-xs">
-          <Link href="/integrations/create">
-            <Layers className="h-3.5 w-3.5" />
-            <span>Add Integration</span>
-          </Link>
-        </Button>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-8">
@@ -340,6 +346,15 @@ export function IntegrationsGrid({
           <Cpu className="h-4 w-4 text-teal-600 dark:text-teal-400" />,
           llmIntegrations,
           "LLM"
+        )}
+
+      {/* 4. Mobile Telephony Section */}
+      {(activeCategoryFilter === "ALL" || activeCategoryFilter === "Mobile Telephony") &&
+        renderSection(
+          "Mobile Telephony (Plivo & Voice Trunks)",
+          <Phone className="h-4 w-4 text-purple-600 dark:text-purple-400" />,
+          telephonyIntegrations,
+          "Telephony"
         )}
     </div>
   );

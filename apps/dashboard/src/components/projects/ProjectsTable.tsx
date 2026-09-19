@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { Project, ProjectStatus, resolveLlmModel } from "../../types/project";
 import { Button } from "../ui/button";
+import { usePermissions } from "../../context/permissions-context";
 
 interface ProjectsTableProps {
   projects: Project[];
@@ -27,6 +28,7 @@ export function ProjectsTable({
   onDeleteProject,
   onViewProject,
 }: ProjectsTableProps) {
+  const { can } = usePermissions();
   const renderStatus = (status: ProjectStatus) => {
     switch (status) {
       case "Active":
@@ -223,30 +225,34 @@ export function ProjectsTable({
                     </Button>
 
                     {/* Edit Project */}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      asChild
-                      className="h-7 w-7 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10"
-                      title="Edit project"
-                    >
-                      <Link href={`/projects/create?edit=${project.id}`}>
-                        <Pencil className="h-3.5 w-3.5" />
-                        <span className="sr-only">Edit</span>
-                      </Link>
-                    </Button>
+                    {can("projects", "edit") && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        asChild
+                        className="h-7 w-7 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10"
+                        title="Edit project"
+                      >
+                        <Link href={`/projects/create?edit=${project.id}`}>
+                          <Pencil className="h-3.5 w-3.5" />
+                          <span className="sr-only">Edit</span>
+                        </Link>
+                      </Button>
+                    )}
 
                     {/* Delete Project */}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10"
-                      onClick={() => onDeleteProject && onDeleteProject(project.id)}
-                      title="Delete project"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      <span className="sr-only">Delete</span>
-                    </Button>
+                    {can("projects", "delete") && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10"
+                        onClick={() => onDeleteProject && onDeleteProject(project.id)}
+                        title="Delete project"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span className="sr-only">Delete</span>
+                      </Button>
+                    )}
                   </div>
                 </td>
               </tr>

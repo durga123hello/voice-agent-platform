@@ -18,7 +18,12 @@ model Tenant {
   members       TenantMember[]
   projects      Project[]
   users         User[]
-  otpCodes      OtpCode[]
+  otpCodes          OtpCode[]
+  integrationAgents IntegrationAgent[]
+  teamMembers       TeamMember[]
+  roles             Role[]
+  permissions       Permission[]
+  subscriptions     OrganizationSubscription[]
 
   @@map("tenants")
 }
@@ -42,15 +47,19 @@ model User {
   profilePhotoUrl String?         @map("profile_photo_url")
   signatureUrl    String?         @map("signature_url")
   passwordHash    String?         @map("password_hash")
+  managerId       String?         @map("manager_id") @db.Uuid
   createdAt       DateTime?       @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime?       @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
   tenant         Tenant?         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  manager        User?           @relation("UserManager", fields: [managerId], references: [id], onDelete: SetNull)
+  reports        User[]          @relation("UserManager")
   memberships    TenantMember[]
   apiCredentials ApiCredential[]
   agentConfigs   AgentConfig[]
 
   @@index([tenantId])
+  @@index([managerId])
   @@map("users")
 }
 
@@ -225,3 +234,143 @@ model SessionEvent {
 
   @@map("session_events")
 }
+
+model IntegrationAgent {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId       String    @map("tenant_id") @db.Uuid
+  type           String    @map("type") // 'stt' | 'tts' | 'llm'
+  name           String    @map("name")
+  providerVendor String    @map("provider_vendor")
+  status         String    @default("active") @map("status") // 'active' | 'restricted' | 'inactive' | 'review'
+  config         Json      @default("{}") @map("config")
+  createdAt      DateTime? @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  llmSubscriptions OrganizationSubscription[] @relation("LlmSubscriptionAgent")
+  sttSubscriptions OrganizationSubscription[] @relation("SttSubscriptionAgent")
+  ttsSubscriptions OrganizationSubscription[] @relation("TtsSubscriptionAgent")
+
+  @@unique([tenantId, type, name])
+  @@index([tenantId, type])
+  @@map("integration_agents")
+}
+
+model TeamMember {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String?   @map("tenant_id") @db.Uuid
+  firstName       String?   @map("first_name")
+  lastName        String?   @map("last_name")
+  employeeId      String?   @map("employee_id")
+  officialEmail   String?   @map("official_email")
+  personalEmail   String?   @map("personal_email")
+  phoneNumber     String?   @map("phone_number")
+  dateOfBirth     String?   @map("date_of_birth")
+  dateOfJoining   String?   @map("date_of_joining")
+  nationality     String?   @map("nationality")
+  gender          String?   @map("gender")
+  role            String    @default("member") @map("role")
+  status          String    @default("active") @map("status")
+  projectAssigned String    @default("Both") @map("project_assigned") // 'vopx website' | 'voice orchestration platform' | 'Both'
+  isDeleted       Boolean   @default(false) @map("is_deleted")
+  deletedAt       DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt       DateTime? @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime? @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([isDeleted])
+  @@map("team_members")
+}
+
+model Role {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId        String?          @map("tenant_id") @db.Uuid
+  name            String           @map("name")
+  description     String?          @map("description")
+  isSystemRole    Boolean          @default(false) @map("is_system_role")
+  createdAt       DateTime?        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime?        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant          Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rolePermissions RolePermission[]
+
+  @@index([tenantId])
+  @@map("roles")
+}
+
+model Permission {
+  id                 String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId           String?          @map("tenant_id") @db.Uuid
+  key                String           @map("key")
+  label              String           @map("label")
+  module             String           @map("module")
+  action             String           @map("action")
+  isSystemPermission Boolean          @default(false) @map("is_system_permission")
+  createdAt          DateTime?        @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime?        @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant             Tenant?          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  rolePermissions    RolePermission[]
+
+  @@unique([tenantId, key])
+  @@index([tenantId])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  roleId       String     @map("role_id") @db.Uuid
+  permissionId String     @map("permission_id") @db.Uuid
+  createdAt    DateTime?  @default(now()) @map("created_at") @db.Timestamptz
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model SubscriptionPlan {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name        String
+  platformFee Decimal  @map("platform_fee") @db.Decimal(10, 2)
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  subscriptions OrganizationSubscription[]
+
+  @@map("subscription_plans")
+}
+
+model OrganizationSubscription {
+  id                            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  tenantId                      String   @map("tenant_id") @db.Uuid
+  planId                        String   @map("plan_id") @db.Uuid
+  llmAgentId                    String?  @map("llm_agent_id") @db.Uuid
+  sttAgentId                    String?  @map("stt_agent_id") @db.Uuid
+  ttsAgentId                    String?  @map("tts_agent_id") @db.Uuid
+  estimatedInputTokensPerMonth  BigInt   @default(0) @map("estimated_input_tokens_per_month")
+  estimatedOutputTokensPerMonth BigInt   @default(0) @map("estimated_output_tokens_per_month")
+  estimatedSttMinutesPerMonth   Int      @default(0) @map("estimated_stt_minutes_per_month")
+  estimatedTtsCharsPerMonth     BigInt   @default(0) @map("estimated_tts_chars_per_month")
+  status                        String   @default("active") @map("status") // 'active' | 'pending' | 'cancelled'
+  createdAt                     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                     DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant   Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  plan     SubscriptionPlan  @relation(fields: [planId], references: [id], onDelete: Cascade)
+  llmAgent IntegrationAgent? @relation("LlmSubscriptionAgent", fields: [llmAgentId], references: [id], onDelete: SetNull)
+  sttAgent IntegrationAgent? @relation("SttSubscriptionAgent", fields: [sttAgentId], references: [id], onDelete: SetNull)
+  ttsAgent IntegrationAgent? @relation("TtsSubscriptionAgent", fields: [ttsAgentId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@map("organization_subscriptions")
+}
+
+
+
+

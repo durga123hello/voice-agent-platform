@@ -65,13 +65,22 @@ function get(url) {
 async function run() {
   console.log('--- STARTING TELEPHONY LIFECYCLE END-TO-END VERIFICATION ---');
 
-  // 1. Get agent configs
-  console.log('1. Fetching agent configurations...');
+  let agentConfigId;
   const configList = await get(`${BACKEND_URL}/api/agent-configs`);
-  if (configList.status !== 200 || !configList.body.length) {
-    throw new Error('Failed to fetch agent configurations or no configs exist.');
+  if (configList.status === 200 && configList.body.length > 0) {
+    agentConfigId = configList.body[0].id;
+  } else {
+    console.log('No agent configs found. Creating a test agent config...');
+    const createdConfig = await post(`${BACKEND_URL}/api/agent-configs`, {
+      name: 'Verification Test Agent',
+      systemPrompt: 'You are a helpful AI assistant.',
+      llmModel: 'gpt-4o'
+    });
+    if (createdConfig.status !== 201 && createdConfig.status !== 200) {
+      throw new Error(`Failed to create test agent config: ${JSON.stringify(createdConfig.body)}`);
+    }
+    agentConfigId = createdConfig.body.id;
   }
-  const agentConfigId = configList.body[0].id;
   console.log(`Using agentConfigId: ${agentConfigId}`);
 
   // 2. Validate phone number validation

@@ -3,40 +3,112 @@
 import React, { useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { 
-  Layers, 
-  CheckCircle2, 
+import {
+  Layers,
+  CheckCircle2,
   ArrowLeft,
-  Mic,
-  Volume2,
-  Cpu,
-  Key,
-  Activity
+  AlertCircle,
 } from "lucide-react";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Button } from "../ui/button";
-import { 
-  Select, 
-  SelectContent, 
-  SelectItem, 
-  SelectTrigger, 
-  SelectValue 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
 } from "../ui/select";
-import { Integration, IntegrationCategory, IntegrationStatus } from "../../types/integration";
+import { IntegrationCategory, IntegrationStatus } from "../../types/integration";
+import { useAuth } from "../../context/auth-context";
+import { createIntegrationAgent, updateIntegrationAgent } from "../../lib/api-integrations";
 
-const STORAGE_KEY = "vopx_integrations_data_v1";
+const STT_VENDORS = [
+  "Deepgram",
+  "OpenAI (Whisper)",
+  "AssemblyAI",
+  "Gladia",
+  "Google Cloud Speech-to-Text",
+  "Microsoft Azure Speech",
+  "AWS Transcribe",
+  "Speechmatics",
+  "ElevenLabs (Scribe)",
+  "Rev AI",
+  "Picovoice",
+  "IBM Watson Speech",
+  "Soniox",
+  "Groq STT (Whisper LPU)",
+  "Fireworks AI STT",
+  "Sarvam AI (Indic STT)",
+  "Cobalt Speech",
+  "WhisperX / Faster-Whisper",
+  "Custom / OpenAI Compatible Endpoint",
+];
+
+const TTS_VENDORS = [
+  "ElevenLabs",
+  "Cartesia",
+  "Play.ht",
+  "OpenAI Audio TTS",
+  "Deepgram Aura",
+  "Google Cloud Text-to-Speech",
+  "Microsoft Azure Neural Voice",
+  "AWS Polly",
+  "Resemble AI",
+  "LMNT",
+  "Fish Speech",
+  "Rime AI",
+  "Murf AI",
+  "WellSaid Labs",
+  "Lovo AI",
+  "Neets AI",
+  "Inworld AI",
+  "Sarvam AI (Indic TTS)",
+  "Kokoro TTS (Self-Hosted)",
+  "Custom / OpenAI Compatible Audio Endpoint",
+];
+
+const LLM_VENDORS = [
+  "OpenAI (GPT-4o / o1 / o3)",
+  "Anthropic (Claude 3.5)",
+  "Google Gemini",
+  "Groq (LPU Engine)",
+  "DeepSeek",
+  "Mistral AI",
+  "Together AI",
+  "Fireworks AI",
+  "Cohere (Command R+)",
+  "AWS Bedrock",
+  "Microsoft Azure OpenAI",
+  "Perplexity AI",
+  "xAI (Grok)",
+  "Anyscale / Ray",
+  "Replicate",
+  "SambaNova Systems",
+  "Cerebras Systems",
+  "OpenRouter",
+  "Sarvam AI (Indic LLM)",
+  "Alibaba Cloud DashScope (Qwen)",
+  "Ollama / vLLM (Self-Hosted)",
+  "Custom / OpenAI Compatible API",
+];
+
+const TELEPHONY_VENDORS = [
+  "Plivo",
+  "Twilio",
+  "Custom / Other",
+];
 
 export function IntegrationForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const editId = searchParams ? searchParams.get("edit") : null;
   const isEditMode = Boolean(editId);
+  const { token } = useAuth();
 
   // Form State
   const [formData, setFormData] = useState({
     name: "",
-    integrationId: "",
     category: "STT Agent" as IntegrationCategory,
     provider: "Deepgram",
     availableModels: "",
@@ -45,123 +117,117 @@ export function IntegrationForm() {
     latency: "120ms",
   });
 
+  const [customProvider, setCustomProvider] = useState("");
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [apiError, setApiError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Pre-fill on Edit
+  const providerOptions =
+    formData.category === "STT Agent"
+      ? STT_VENDORS
+      : formData.category === "TTS Agent"
+      ? TTS_VENDORS
+      : formData.category === "LLM Provider"
+      ? LLM_VENDORS
+      : TELEPHONY_VENDORS;
+
+  // Sync default provider when category changes if current provider not in category options
   useEffect(() => {
-    if (!editId) return;
-    try {
-      const existing = localStorage.getItem(STORAGE_KEY);
-      if (existing) {
-        const list: Integration[] = JSON.parse(existing);
-        const target = list.find((item) => item.id === editId);
-        if (target) {
-          setFormData({
-            name: target.name,
-            integrationId: target.integrationId,
-            category: target.category,
-            provider: target.provider,
-            availableModels: target.availableModels,
-            status: target.status,
-            apiKey: target.apiKey,
-            latency: target.latency || "120ms",
-          });
-        }
+    if (!isEditMode) {
+      if (!providerOptions.includes(formData.provider)) {
+        setFormData((prev) => ({ ...prev, provider: providerOptions[0] }));
       }
-    } catch (e) {
-      console.error("Failed loading integration for edit", e);
     }
-  }, [editId]);
+  }, [formData.category, isEditMode, providerOptions]);
 
   // Validation
   const validate = () => {
     const newErrors: Record<string, string> = {};
 
     if (!formData.name.trim()) newErrors.name = "Integration name is required";
-    if (!formData.integrationId.trim()) newErrors.integrationId = "Integration ID is required";
     if (!formData.availableModels.trim()) newErrors.availableModels = "Available models are required";
-    if (!formData.apiKey.trim()) newErrors.apiKey = "API Key is required";
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
 
   // Submit Handler
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setApiError(null);
     if (!validate()) return;
 
     setIsSubmitting(true);
 
-    const formattedDate = new Date().toLocaleDateString("en-US", {
-      weekday: "short",
-      day: "2-digit",
-      month: "short",
-      year: "numeric",
-    });
+    const modelsList = formData.availableModels
+      .split(",")
+      .map((m) => m.trim())
+      .filter(Boolean);
 
-    if (isEditMode && editId) {
-      try {
-        const existing = localStorage.getItem(STORAGE_KEY);
-        const list: Integration[] = existing ? JSON.parse(existing) : [];
-        const updatedList = list.map((item) => {
-          if (item.id === editId) {
-            return {
-              ...item,
-              name: formData.name.trim(),
-              integrationId: formData.integrationId.trim().toUpperCase(),
-              category: formData.category,
-              provider: formData.provider.trim(),
-              availableModels: formData.availableModels.trim(),
-              status: formData.status,
-              apiKey: formData.apiKey.trim(),
-              latency: formData.latency.trim(),
-            };
-          }
-          return item;
-        });
+    const latencyNum = parseInt(formData.latency.replace(/\D/g, "")) || 120;
 
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
-      } catch (err) {
-        console.error("Failed updating integration", err);
-      }
+    // Convert UI status to backend status enum
+    let statusEnum = "active";
+    if (formData.status === "Inactive") statusEnum = "inactive";
+    else if (formData.status === "Ready" || formData.status === "Connected") statusEnum = "review";
 
-      setToastMessage(`Integration ${formData.name} updated successfully! Redirecting...`);
-      setTimeout(() => {
-        router.push("/integrations");
-      }, 900);
-      return;
+    // Build payload according to Zod validator specs
+    let configPayload: any = {};
+    if (formData.category === "STT Agent") {
+      configPayload = {
+        available_models: modelsList.length > 0 ? modelsList : ["default-model"],
+        avg_latency_ms: latencyNum,
+        supported_languages: ["en-US", "es-ES"],
+      };
+    } else if (formData.category === "TTS Agent") {
+      configPayload = {
+        available_models: modelsList.length > 0 ? modelsList : ["default-model"],
+        avg_latency_ms: latencyNum,
+        available_voices: ["Adam", "Rachel"],
+        sample_rate: 24000,
+      };
+    } else if (formData.category === "Mobile Telephony") {
+      configPayload = {
+        available_models: modelsList.length > 0 ? modelsList : ["+1 800 555 0199"],
+        auth_id: "MAZJE4OTDLZDATNWRMNI",
+      };
+    } else {
+      configPayload = {
+        available_models: modelsList.length > 0 ? modelsList : ["gpt-4o"],
+        supports_streaming: true,
+      };
     }
 
-    // CREATE MODE
-    const newIntegration: Integration = {
-      id: `int-${Date.now()}`,
-      integrationId: formData.integrationId.trim().toUpperCase(),
+    const finalProvider =
+      formData.provider === "Custom / Other"
+        ? customProvider.trim() || "Custom Vendor"
+        : formData.provider.trim();
+
+    const payload = {
       name: formData.name.trim(),
-      category: formData.category,
-      provider: formData.provider.trim(),
-      availableModels: formData.availableModels.trim(),
-      status: formData.status,
-      apiKey: formData.apiKey.trim(),
-      latency: formData.latency.trim(),
-      createdAt: formattedDate,
+      provider_vendor: finalProvider,
+      status: statusEnum,
+      config: configPayload,
     };
 
     try {
-      const existing = localStorage.getItem(STORAGE_KEY);
-      const list: Integration[] = existing ? JSON.parse(existing) : [];
-      list.unshift(newIntegration);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-    } catch (err) {
-      console.error("Failed saving integration", err);
-    }
+      if (isEditMode && editId) {
+        await updateIntegrationAgent(formData.category, editId, payload, token);
+        setToastMessage(`Integration ${formData.name} updated successfully! Redirecting...`);
+      } else {
+        await createIntegrationAgent(formData.category, payload, token);
+        setToastMessage(`Integration ${formData.name} created successfully! Redirecting...`);
+      }
 
-    setToastMessage(`Integration ${newIntegration.name} added successfully! Redirecting...`);
-    setTimeout(() => {
-      router.push("/integrations");
-    }, 900);
+      setTimeout(() => {
+        router.push("/integrations");
+      }, 900);
+    } catch (err: any) {
+      console.error("API error during submit:", err);
+      setApiError(err.message || "Failed to save integration agent");
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -191,10 +257,17 @@ export function IntegrationForm() {
             {isEditMode ? "Edit Provider Integration" : "Add Provider Integration"}
           </h1>
           <p className="text-xs text-muted-foreground">
-            Configure STT agent, TTS agent, or LLM provider credentials and model catalogs.
+            Configure STT agent, TTS agent, LLM provider, or Mobile Telephony credentials.
           </p>
         </div>
       </div>
+
+      {apiError && (
+        <div className="flex items-center gap-2.5 rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs font-semibold text-rose-600 dark:text-rose-400">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>{apiError}</span>
+        </div>
+      )}
 
       {/* Main Form Fields */}
       <div className="rounded-xl border border-border bg-card p-6 shadow-2xs space-y-6">
@@ -206,7 +279,7 @@ export function IntegrationForm() {
             </Label>
             <Input
               id="name"
-              placeholder="e.g. Deepgram Nova-2 STT Agent, ElevenLabs Turbo v2.5, OpenAI GPT-4o"
+              placeholder="e.g. Deepgram Nova-2 STT Agent, ElevenLabs Turbo v2.5, OpenAI GPT-4o, Plivo Primary Gateway"
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               className={`h-9 text-xs ${errors.name ? "border-rose-500" : ""}`}
@@ -214,22 +287,7 @@ export function IntegrationForm() {
             {errors.name && <p className="text-[11px] font-medium text-rose-500">{errors.name}</p>}
           </div>
 
-          {/* 2. Integration ID */}
-          <div className="space-y-1.5">
-            <Label htmlFor="integrationId" className="text-xs font-semibold text-foreground flex items-center gap-1">
-              Integration ID <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
-            </Label>
-            <Input
-              id="integrationId"
-              placeholder="e.g. INT-820"
-              value={formData.integrationId}
-              onChange={(e) => setFormData({ ...formData, integrationId: e.target.value })}
-              className={`h-9 text-xs font-mono uppercase ${errors.integrationId ? "border-rose-500" : ""}`}
-            />
-            {errors.integrationId && <p className="text-[11px] font-medium text-rose-500">{errors.integrationId}</p>}
-          </div>
-
-          {/* 3. Category */}
+          {/* 2. Category */}
           <div className="space-y-1.5">
             <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
               Category <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
@@ -237,6 +295,7 @@ export function IntegrationForm() {
             <Select
               value={formData.category}
               onValueChange={(val) => setFormData({ ...formData, category: val as IntegrationCategory })}
+              disabled={isEditMode}
             >
               <SelectTrigger className="h-9 text-xs">
                 <SelectValue />
@@ -245,25 +304,43 @@ export function IntegrationForm() {
                 <SelectItem value="STT Agent">🎙️ STT Agent (Speech-to-Text)</SelectItem>
                 <SelectItem value="TTS Agent">🔊 TTS Agent (Text-to-Speech)</SelectItem>
                 <SelectItem value="LLM Provider">🤖 LLM Provider (Language Model)</SelectItem>
+                <SelectItem value="Mobile Telephony">📞 Mobile Telephony (Plivo & Voice Trunks)</SelectItem>
               </SelectContent>
             </Select>
           </div>
 
-          {/* 4. Provider Vendor */}
+          {/* 3. Provider Vendor Dropdown */}
           <div className="space-y-1.5">
-            <Label htmlFor="provider" className="text-xs font-semibold text-foreground flex items-center gap-1">
+            <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
               Provider Vendor <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
             </Label>
-            <Input
-              id="provider"
-              placeholder="e.g. Deepgram, ElevenLabs, OpenAI, Anthropic, Cartesia, Google Cloud"
+            <Select
               value={formData.provider}
-              onChange={(e) => setFormData({ ...formData, provider: e.target.value })}
-              className="h-9 text-xs"
-            />
+              onValueChange={(val) => setFormData({ ...formData, provider: val })}
+            >
+              <SelectTrigger className="h-9 text-xs">
+                <SelectValue placeholder="Select Provider Vendor" />
+              </SelectTrigger>
+              <SelectContent>
+                {providerOptions.map((v) => (
+                  <SelectItem key={v} value={v}>
+                    {v}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            {formData.provider === "Custom / Other" && (
+              <Input
+                placeholder="Enter custom provider vendor name..."
+                value={customProvider}
+                onChange={(e) => setCustomProvider(e.target.value)}
+                className="h-9 text-xs mt-1.5"
+              />
+            )}
           </div>
 
-          {/* 5. Status */}
+          {/* 4. Status */}
           <div className="space-y-1.5">
             <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
               Status <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
@@ -284,38 +361,7 @@ export function IntegrationForm() {
             </Select>
           </div>
 
-          {/* 6. Available Models */}
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label htmlFor="availableModels" className="text-xs font-semibold text-foreground flex items-center gap-1">
-              Available Models & Engine Catalogs <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
-            </Label>
-            <Input
-              id="availableModels"
-              placeholder="e.g. nova-2-general, nova-2-medical OR gpt-4o, gpt-4o-mini OR eleven_turbo_v2_5"
-              value={formData.availableModels}
-              onChange={(e) => setFormData({ ...formData, availableModels: e.target.value })}
-              className={`h-9 text-xs font-mono ${errors.availableModels ? "border-rose-500" : ""}`}
-            />
-            {errors.availableModels && <p className="text-[11px] font-medium text-rose-500">{errors.availableModels}</p>}
-          </div>
-
-          {/* 7. API Key */}
-          <div className="space-y-1.5 sm:col-span-2">
-            <Label htmlFor="apiKey" className="text-xs font-semibold text-foreground flex items-center gap-1">
-              API Key Credentials <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
-            </Label>
-            <Input
-              id="apiKey"
-              type="password"
-              placeholder="sk-live-••••••••••••••••"
-              value={formData.apiKey}
-              onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
-              className={`h-9 text-xs font-mono ${errors.apiKey ? "border-rose-500" : ""}`}
-            />
-            {errors.apiKey && <p className="text-[11px] font-medium text-rose-500">{errors.apiKey}</p>}
-          </div>
-
-          {/* 8. Latency */}
+          {/* 5. Target Average Latency */}
           <div className="space-y-1.5">
             <Label htmlFor="latency" className="text-xs font-semibold text-foreground flex items-center gap-1">
               Target Average Latency
@@ -328,23 +374,22 @@ export function IntegrationForm() {
               className="h-9 text-xs font-mono"
             />
           </div>
-        </div>
 
-        {/* Buttons */}
-        <div className="flex items-center justify-end gap-3 pt-4 border-t border-border/70">
-          <Button variant="outline" size="sm" asChild className="text-xs">
-            <Link href="/integrations">Cancel</Link>
-          </Button>
+          {/* 6. Available Models */}
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="availableModels" className="text-xs font-semibold text-foreground flex items-center gap-1">
+              Available Models & Engine Catalogs (Comma Separated) <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
+            </Label>
+            <Input
+              id="availableModels"
+              placeholder="e.g. nova-2-general, nova-2-medical OR gpt-4o, gpt-4o-mini OR eleven_turbo_v2_5"
+              value={formData.availableModels}
+              onChange={(e) => setFormData({ ...formData, availableModels: e.target.value })}
+              className={`h-9 text-xs font-mono ${errors.availableModels ? "border-rose-500" : ""}`}
+            />
+            {errors.availableModels && <p className="text-[11px] font-medium text-rose-500">{errors.availableModels}</p>}
+          </div>
 
-          <Button
-            type="submit"
-            size="sm"
-            disabled={isSubmitting}
-            className="gap-1.5 bg-teal-700 hover:bg-teal-800 text-white text-xs px-5 shadow-xs"
-          >
-            <CheckCircle2 className="h-4 w-4" />
-            <span>{isEditMode ? "Update Integration" : "Save Integration"}</span>
-          </Button>
         </div>
       </div>
     </form>

@@ -7,6 +7,14 @@ export type UserRole =
 
 export type UserStatus = 'Active' | 'Away' | 'Do Not Disturb';
 
+export interface ManagerSummary {
+  id: string;
+  name: string;
+  email?: string;
+  officialEmail?: string;
+  role?: string;
+}
+
 export interface User {
   id: string;
   tenantId?: string;
@@ -27,6 +35,9 @@ export interface User {
   dateOfBirth?: string;
   nationality?: string;
   gender?: 'Male' | 'Female' | 'Other';
+  managerId?: string | null;
+  manager_id?: string | null;
+  manager?: ManagerSummary | null;
   avatarUrl?: string;
   signatureUrl?: string;
 }

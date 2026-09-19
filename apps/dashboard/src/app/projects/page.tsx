@@ -7,6 +7,7 @@ import { ProjectsTable } from "../../components/projects/ProjectsTable";
 import { ProjectDetailsModal } from "../../components/projects/ProjectDetailsModal";
 import { INITIAL_MOCK_PROJECTS } from "../../lib/mock-projects";
 import { Project, ProjectFilters, resolveLlmModel } from "../../types/project";
+import { RouteGuard } from "../../components/shell/RouteGuard";
 
 const STORAGE_KEY = "vopx_projects_data_v1";
 
@@ -109,45 +110,46 @@ export default function ProjectsPage() {
   };
 
   return (
-    <div className="space-y-5">
-      {/* 1. Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1 border-b border-border/60">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-700/10 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300 border border-teal-500/20 shadow-2xs">
-            <FolderKanban className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-foreground">
-              Projects & Workspaces
-            </h1>
-            <p className="text-xs text-muted-foreground">
-              Configure speech-to-text, text-to-speech, and AI voice agents for each isolated workspace environment.
-            </p>
+    <RouteGuard module="projects">
+      <div className="space-y-5">
+        {/* 1. Page Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1 border-b border-border/60">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-700/10 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300 border border-teal-500/20 shadow-2xs">
+              <FolderKanban className="h-5 w-5" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight text-foreground">
+                Projects & Workspaces
+              </h1>
+              <p className="text-xs text-muted-foreground">
+                Configure speech-to-text, text-to-speech, and AI voice agents for each isolated workspace environment.
+              </p>
+            </div>
           </div>
         </div>
+
+        {/* 2. Toolbar */}
+        <ProjectToolbar
+          filters={filters}
+          onFilterChange={handleFilterChange}
+          filteredProjects={filteredProjects}
+        />
+
+        {/* 3. Table */}
+        <ProjectsTable
+          projects={filteredProjects}
+          onDeleteProject={handleDeleteProject}
+          onViewProject={handleViewProject}
+        />
+
+        {/* 4. Details Modal */}
+        <ProjectDetailsModal
+          project={selectedProject}
+          isOpen={isDetailsOpen}
+          onClose={() => setIsDetailsOpen(false)}
+        />
       </div>
-
-      {/* 2. Toolbar */}
-      <ProjectToolbar
-        filters={filters}
-        onFilterChange={handleFilterChange}
-        filteredProjects={filteredProjects}
-      />
-
-      {/* 3. Table */}
-      <ProjectsTable
-        projects={filteredProjects}
-        onDeleteProject={handleDeleteProject}
-        onViewProject={handleViewProject}
-      />
-
-
-      {/* 4. Details Modal */}
-      <ProjectDetailsModal
-        project={selectedProject}
-        isOpen={isDetailsOpen}
-        onClose={() => setIsDetailsOpen(false)}
-      />
-    </div>
+    </RouteGuard>
   );
 }

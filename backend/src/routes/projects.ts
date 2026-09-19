@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import prisma from '../db/client';
 import { sessionAuth } from '../middleware/sessionAuth';
+import { requirePermission } from '../middleware/requirePermission';
 
 const router = Router();
 
@@ -10,7 +11,7 @@ router.use(sessionAuth);
 /**
  * 1. Create a new project: POST /api/projects
  */
-router.post('/', async (req: Request, res: Response, next: NextFunction) => {
+router.post('/', requirePermission('projects:create'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId;
     const { name } = req.body;
@@ -36,7 +37,7 @@ router.post('/', async (req: Request, res: Response, next: NextFunction) => {
 /**
  * 2. List all projects for an organization: GET /api/projects
  */
-router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', requirePermission('projects:view'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId;
 
@@ -54,7 +55,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 /**
  * 3. Retrieve single project by ID: GET /api/projects/:id
  */
-router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id', requirePermission('projects:view'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId;
     const { id } = req.params;
@@ -77,7 +78,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 /**
  * 4. Rename / Update project: PATCH /api/projects/:id
  */
-router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.patch('/:id', requirePermission('projects:edit'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId;
     const { id } = req.params;
@@ -111,7 +112,7 @@ router.patch('/:id', async (req: Request, res: Response, next: NextFunction) => 
 /**
  * 5. Delete project: DELETE /api/projects/:id
  */
-router.delete('/:id', async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', requirePermission('projects:delete'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tenantId = (req as any).tenantId;
     const { id } = req.params;

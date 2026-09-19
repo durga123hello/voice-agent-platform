@@ -30,6 +30,7 @@ import {
 } from "../ui/dialog";
 import { Organization, OrganizationFilters } from "../../types/organization";
 import { exportOrgsToExcel, exportOrgsToPdf, exportOrgsToWord } from "../../lib/export-utils";
+import { usePermissions } from "../../context/permissions-context";
 
 interface OrganizationToolbarProps {
   filters: OrganizationFilters;
@@ -42,6 +43,7 @@ export function OrganizationToolbar({
   onFilterChange,
   filteredOrgs,
 }: OrganizationToolbarProps) {
+  const { can } = usePermissions();
   const [exporting, setExporting] = useState<string | null>(null);
   const [pendingExport, setPendingExport] = useState<"excel" | "pdf" | "word" | null>(null);
 
@@ -75,7 +77,7 @@ export function OrganizationToolbar({
           <div className="relative flex-1 min-w-[220px] max-w-sm">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground pointer-events-none" />
             <Input
-              placeholder="Search by name, code, email, phone, or country..."
+              placeholder="Search by name, code, email, phone, or admin..."
               value={filters.search}
               onChange={(e) => onFilterChange({ search: e.target.value })}
               className="pl-9 pr-8 h-9 text-xs bg-background"
@@ -93,7 +95,7 @@ export function OrganizationToolbar({
           </div>
 
           {/* Status filter */}
-          <div className="w-[140px]">
+          <div className="w-[150px]">
             <Select
               value={filters.status}
               onValueChange={(val) => onFilterChange({ status: val })}
@@ -104,8 +106,8 @@ export function OrganizationToolbar({
               <SelectContent>
                 <SelectItem value="ALL">All Statuses</SelectItem>
                 <SelectItem value="Active">Active</SelectItem>
-                <SelectItem value="Pending">Pending</SelectItem>
-                <SelectItem value="Inactive">Inactive</SelectItem>
+                <SelectItem value="Pending Setup">Pending Setup</SelectItem>
+                <SelectItem value="Suspended">Suspended</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -152,15 +154,19 @@ export function OrganizationToolbar({
             </Button>
           </div>
 
-          <span className="h-6 w-px bg-border mx-0.5 hidden sm:inline-block" />
+          {can("organization", "create") && (
+            <>
+              <span className="h-6 w-px bg-border mx-0.5 hidden sm:inline-block" />
 
-          {/* "+ Create Organization" Button */}
-          <Button asChild className="h-9 px-3.5 gap-1.5 bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-500 text-white font-medium text-xs shadow-sm">
-            <Link href="/organization/create">
-              <Plus className="h-4 w-4" />
-              <span>Create Organization</span>
-            </Link>
-          </Button>
+              {/* "+ Create Organization" Button */}
+              <Button asChild className="h-9 px-3.5 gap-1.5 bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-500 text-white font-medium text-xs shadow-sm">
+                <Link href="/organization/create">
+                  <Plus className="h-4 w-4" />
+                  <span>Create Organization</span>
+                </Link>
+              </Button>
+            </>
+          )}
         </div>
       </div>
 

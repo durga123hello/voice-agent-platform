@@ -14,9 +14,21 @@ import telephonyWebhooksRouter from './routes/telephonyWebhooks';
 import projectsRouter from './routes/projects';
 import membersRouter from './routes/members';
 import usersRouter from './routes/users';
+import sttAgentsRouter from './routes/sttAgents';
+import ttsAgentsRouter from './routes/ttsAgents';
+import llmAgentsRouter from './routes/llmAgents';
+import telephonyAgentsRouter from './routes/telephonyAgents';
+import teamsRouter from './routes/teams';
+import permissionsRouter from './routes/permissions';
+import rolesRouter from './routes/roles';
+import billingRouter from './routes/billing';
 import prisma from './db/client';
+import { ensureSeedRbac } from './db/seedRbac';
 
 import { rateLimiter } from './utils/rateLimiter';
+
+// Ensure RBAC system permissions and roles seeded
+ensureSeedRbac().catch((err) => console.error('RBAC startup seed error:', err));
 
 const app = express();
 
@@ -36,7 +48,17 @@ app.use('/api/analytics', analyticsRouter);
 app.use('/api/auth', authRouter);
 app.use('/api/members', membersRouter);
 app.use('/api/users', usersRouter);
+app.use('/api/teams', teamsRouter);
+app.use('/api/permissions', permissionsRouter);
+app.use('/api/roles', rolesRouter);
+app.use('/api/billing', billingRouter);
+app.use('/api/subscription-plans', billingRouter);
+app.use('/api/stt-agents', sttAgentsRouter);
+app.use('/api/tts-agents', ttsAgentsRouter);
+app.use('/api/llm-agents', llmAgentsRouter);
+app.use('/api/telephony-agents', telephonyAgentsRouter);
 app.use('/api/v1/assistants', assistantsRouter);
+
 app.use('/v1/assistants', assistantsRouter); // Standard v1 spec alias
 app.use('/api/calls', callsRouter);
 app.use('/api/telephony', telephonyWebhooksRouter);

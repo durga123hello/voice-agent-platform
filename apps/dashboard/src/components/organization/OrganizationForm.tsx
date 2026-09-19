@@ -270,9 +270,9 @@ export function OrganizationForm() {
         </div>
       </div>
 
-      {/* 3-Column Responsive Grid Form */}
+      {/* 2-Column Grid Form Layout */}
       <div className="rounded-xl border border-border bg-card p-6 shadow-xs space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           {/* 1. Organization Name */}
           <div className="space-y-1.5">
             <Label htmlFor="orgName" className="text-xs font-semibold text-foreground flex items-center gap-1">

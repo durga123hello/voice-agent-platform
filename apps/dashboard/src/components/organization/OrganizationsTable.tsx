@@ -16,6 +16,7 @@ import {
 import { Organization, OrganizationStatus } from "../../types/organization";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
+import { usePermissions } from "../../context/permissions-context";
 
 interface OrganizationsTableProps {
   organizations: Organization[];
@@ -28,6 +29,7 @@ export function OrganizationsTable({
   onDeleteOrg,
   onViewOrg,
 }: OrganizationsTableProps) {
+  const { can } = usePermissions();
   const renderStatus = (status: OrganizationStatus) => {
     switch (status) {
       case "Active":
@@ -231,30 +233,34 @@ export function OrganizationsTable({
                     </Button>
 
                     {/* Edit Organization */}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      asChild
-                      className="h-7 w-7 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10"
-                      title="Edit organization"
-                    >
-                      <Link href={`/organization/create?edit=${org.id}`}>
-                        <Pencil className="h-3.5 w-3.5" />
-                        <span className="sr-only">Edit</span>
-                      </Link>
-                    </Button>
+                    {can("organization", "edit") && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        asChild
+                        className="h-7 w-7 text-muted-foreground hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-500/10"
+                        title="Edit organization"
+                      >
+                        <Link href={`/organization/create?edit=${org.id}`}>
+                          <Pencil className="h-3.5 w-3.5" />
+                          <span className="sr-only">Edit</span>
+                        </Link>
+                      </Button>
+                    )}
 
                     {/* Delete Organization */}
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-7 w-7 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10"
-                      onClick={() => onDeleteOrg && onDeleteOrg(org.id)}
-                      title="Delete organization"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      <span className="sr-only">Delete</span>
-                    </Button>
+                    {can("organization", "delete") && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-500/10"
+                        onClick={() => onDeleteOrg && onDeleteOrg(org.id)}
+                        title="Delete organization"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        <span className="sr-only">Delete</span>
+                      </Button>
+                    )}
                   </div>
                 </td>
               </tr>

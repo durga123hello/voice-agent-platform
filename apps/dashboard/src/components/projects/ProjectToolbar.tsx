@@ -30,6 +30,7 @@ import {
 } from "../ui/dialog";
 import { Project, ProjectFilters } from "../../types/project";
 import { exportProjectsToExcel, exportProjectsToPdf, exportProjectsToWord } from "../../lib/export-utils";
+import { usePermissions } from "../../context/permissions-context";
 
 interface ProjectToolbarProps {
   filters: ProjectFilters;
@@ -42,6 +43,7 @@ export function ProjectToolbar({
   onFilterChange,
   filteredProjects,
 }: ProjectToolbarProps) {
+  const { can } = usePermissions();
   const [exporting, setExporting] = useState<string | null>(null);
   const [pendingExport, setPendingExport] = useState<"excel" | "pdf" | "word" | null>(null);
 
@@ -153,15 +155,19 @@ export function ProjectToolbar({
             </Button>
           </div>
 
-          <span className="h-6 w-px bg-border mx-0.5 hidden sm:inline-block" />
+          {can("projects", "create") && (
+            <>
+              <span className="h-6 w-px bg-border mx-0.5 hidden sm:inline-block" />
 
-          {/* "+ Create Project" button */}
-          <Button asChild className="h-9 px-3.5 gap-1.5 bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-500 text-white font-medium text-xs shadow-sm">
-            <Link href="/projects/create">
-              <Plus className="h-4 w-4" />
-              <span>Create Project</span>
-            </Link>
-          </Button>
+              {/* "+ Create Project" button */}
+              <Button asChild className="h-9 px-3.5 gap-1.5 bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-500 text-white font-medium text-xs shadow-sm">
+                <Link href="/projects/create">
+                  <Plus className="h-4 w-4" />
+                  <span>Create Project</span>
+                </Link>
+              </Button>
+            </>
+          )}
         </div>
       </div>
 

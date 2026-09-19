@@ -7,6 +7,7 @@ import { OrganizationsTable } from "../../components/organization/OrganizationsT
 import { OrganizationDetailsModal } from "../../components/organization/OrganizationDetailsModal";
 import { INITIAL_MOCK_ORGANIZATIONS } from "../../lib/mock-organizations";
 import { Organization, OrganizationFilters } from "../../types/organization";
+import { RouteGuard } from "../../components/shell/RouteGuard";
 
 const STORAGE_KEY = "vopx_organizations_data_v1";
 
@@ -108,44 +109,46 @@ export default function OrganizationPage() {
   };
 
   return (
-    <div className="space-y-5">
-      {/* 1. Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1 border-b border-border/60">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-700/10 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300 border border-teal-500/20 shadow-2xs">
-            <Building className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-foreground">
-              Organizations Directory
-            </h1>
-            <p className="text-xs text-muted-foreground">
-              Manage enterprise tenants, corporate credentials, country domains, and billing boundaries.
-            </p>
+    <RouteGuard module="organization">
+      <div className="space-y-5">
+        {/* 1. Page Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1 border-b border-border/60">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-700/10 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300 border border-teal-500/20 shadow-2xs">
+              <Building className="h-5 w-5" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight text-foreground">
+                Organizations Directory
+              </h1>
+              <p className="text-xs text-muted-foreground">
+                Manage enterprise tenants, corporate credentials, country domains, and billing boundaries.
+              </p>
+            </div>
           </div>
         </div>
+
+        {/* 2. Toolbar */}
+        <OrganizationToolbar
+          filters={filters}
+          onFilterChange={handleFilterChange}
+          filteredOrgs={filteredOrgs}
+        />
+
+        {/* 3. Table */}
+        <OrganizationsTable
+          organizations={filteredOrgs}
+          onDeleteOrg={handleDeleteOrg}
+          onViewOrg={handleViewOrg}
+        />
+
+        {/* 4. Details Modal */}
+        <OrganizationDetailsModal
+          org={selectedOrg}
+          isOpen={isDetailsOpen}
+          onClose={() => setIsDetailsOpen(false)}
+        />
       </div>
-
-      {/* 2. Toolbar */}
-      <OrganizationToolbar
-        filters={filters}
-        onFilterChange={handleFilterChange}
-        filteredOrgs={filteredOrgs}
-      />
-
-      {/* 3. Table */}
-      <OrganizationsTable
-        organizations={filteredOrgs}
-        onDeleteOrg={handleDeleteOrg}
-        onViewOrg={handleViewOrg}
-      />
-
-      {/* 4. Details Modal */}
-      <OrganizationDetailsModal
-        org={selectedOrg}
-        isOpen={isDetailsOpen}
-        onClose={() => setIsDetailsOpen(false)}
-      />
-    </div>
+    </RouteGuard>
   );
 }

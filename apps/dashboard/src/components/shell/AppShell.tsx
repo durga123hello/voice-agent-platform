@@ -10,6 +10,7 @@ import { Loader2 } from "lucide-react";
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const { isAuthenticated, isLoading } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
@@ -17,24 +18,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isAuthPage = pathname === "/login" || pathname === "/signup";
 
   useEffect(() => {
-    if (!isLoading) {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (mounted && !isLoading) {
       if (isAuthPage && isAuthenticated) {
         router.replace("/users");
       } else if (!isAuthPage && !isAuthenticated) {
         router.replace("/login");
       }
     }
-  }, [isLoading, isAuthenticated, isAuthPage, router]);
+  }, [mounted, isLoading, isAuthenticated, isAuthPage, router]);
 
   // Loading screen while checking auth session state
-  if (isLoading) {
+  if (!mounted || isLoading) {
     return (
-      <div className="flex h-screen w-full items-center justify-center bg-background text-foreground">
+      <div className="fixed inset-0 z-50 flex h-screen w-screen items-center justify-center bg-slate-950 text-white">
         <div className="flex flex-col items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-700 dark:bg-teal-600 text-white font-extrabold text-lg shadow-md animate-pulse">
-            vx
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-teal-600 text-white font-extrabold text-xl shadow-lg animate-pulse">
+            VX
           </div>
-          <Loader2 className="h-5 w-5 animate-spin text-teal-600 dark:text-teal-400" />
+          <div className="flex items-center gap-2 text-xs text-teal-400 font-medium">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span>Loading Workspace...</span>
+          </div>
         </div>
       </div>
     );
@@ -44,8 +52,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (isAuthPage) {
     if (isAuthenticated) {
       return (
-        <div className="flex h-screen w-full items-center justify-center bg-background">
-          <Loader2 className="h-6 w-6 animate-spin text-teal-600 dark:text-teal-400" />
+        <div className="fixed inset-0 z-50 flex h-screen w-screen items-center justify-center bg-slate-950 text-white">
+          <Loader2 className="h-6 w-6 animate-spin text-teal-400" />
         </div>
       );
     }
@@ -55,8 +63,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Protected dashboard routes: require authentication
   if (!isAuthenticated) {
     return (
-      <div className="flex h-screen w-full items-center justify-center bg-background">
-        <Loader2 className="h-6 w-6 animate-spin text-teal-600 dark:text-teal-400" />
+      <div className="fixed inset-0 z-50 flex h-screen w-screen items-center justify-center bg-slate-950 text-white">
+        <Loader2 className="h-6 w-6 animate-spin text-teal-400" />
       </div>
     );
   }

@@ -38,7 +38,7 @@ export function Header({ onToggleSidebar }: HeaderProps) {
   const currentUser = {
     name: user?.name || "Administrator",
     email: user?.email || "admin@vopx.ai",
-    role: "Administrator",
+    role: user?.role || "Administrator",
     initials: user?.initials || "AD"
   };
 
@@ -136,9 +136,11 @@ export function Header({ onToggleSidebar }: HeaderProps) {
               </div>
             </div>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-xs flex items-center gap-2 cursor-pointer">
-              <User className="h-3.5 w-3.5 text-muted-foreground" />
-              Profile
+            <DropdownMenuItem className="text-xs flex items-center gap-2 cursor-pointer" asChild>
+              <Link href="/profile">
+                <User className="h-3.5 w-3.5 text-muted-foreground" />
+                Profile
+              </Link>
             </DropdownMenuItem>
             <DropdownMenuItem className="text-xs flex items-center gap-2 cursor-pointer">
               <Settings className="h-3.5 w-3.5 text-muted-foreground" />

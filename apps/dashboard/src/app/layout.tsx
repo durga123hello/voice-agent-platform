@@ -4,6 +4,7 @@ import "./globals.css";
 import { ThemeProvider } from "../components/theme-provider";
 import { AppShell } from "../components/shell/AppShell";
 import { AuthProvider } from "../context/auth-context";
+import { PermissionsProvider } from "../context/permissions-context";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -27,7 +28,9 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <AuthProvider>
-            <AppShell>{children}</AppShell>
+            <PermissionsProvider>
+              <AppShell>{children}</AppShell>
+            </PermissionsProvider>
           </AuthProvider>
         </ThemeProvider>
       </body>

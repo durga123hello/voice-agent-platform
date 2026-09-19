@@ -1,5 +1,6 @@
 import React, { Suspense } from "react";
 import { OrganizationForm } from "../../../components/organization/OrganizationForm";
+import { RouteGuard } from "../../../components/shell/RouteGuard";
 
 export const metadata = {
   title: "Create Organization — vopx",
@@ -8,8 +9,10 @@ export const metadata = {
 
 export default function CreateOrganizationPage() {
   return (
-    <Suspense fallback={<div className="p-8 text-xs text-muted-foreground animate-pulse">Loading organization sign-up form...</div>}>
-      <OrganizationForm />
-    </Suspense>
+    <RouteGuard module="organization" action="create">
+      <Suspense fallback={<div className="p-8 text-xs text-muted-foreground animate-pulse">Loading organization sign-up form...</div>}>
+        <OrganizationForm />
+      </Suspense>
+    </RouteGuard>
   );
 }

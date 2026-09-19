@@ -1,4 +1,4 @@
-export type IntegrationCategory = "STT Agent" | "TTS Agent" | "LLM Provider";
+export type IntegrationCategory = "STT Agent" | "TTS Agent" | "LLM Provider" | "Mobile Telephony";
 export type IntegrationStatus = "Active" | "Connected" | "Ready" | "Inactive";
 
 export interface Integration {

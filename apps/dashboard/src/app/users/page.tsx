@@ -9,6 +9,7 @@ import { UserDetailsModal } from "../../components/users/UserDetailsModal";
 import { INITIAL_MOCK_USERS } from "../../lib/mock-users";
 import { User, UserFilters } from "../../types/user";
 import { useAuth } from "../../context/auth-context";
+import { RouteGuard } from "../../components/shell/RouteGuard";
 
 const PAGE_SIZE = 10;
 const STORAGE_KEY = "vopx_users_data_v3";
@@ -163,53 +164,55 @@ export default function UsersPage() {
   };
 
   return (
-    <div className="space-y-5">
-      {/* 1. Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-1 border-b border-border/60">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-700/10 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300 border border-teal-500/20 shadow-2xs">
-            <UsersIcon className="h-5 w-5" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-foreground">
-              User Management
-            </h1>
-            <p className="text-xs text-muted-foreground">
-              Manage all user accounts and their roles within the system.
-            </p>
+    <RouteGuard module="users">
+      <div className="space-y-6 pb-12">
+        {/* 1. Header Banner */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-border/60">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-teal-700/10 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300 border border-teal-500/20 shadow-2xs">
+              <UsersIcon className="h-5 w-5" />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold tracking-tight text-foreground">
+                User Management
+              </h1>
+              <p className="text-xs text-muted-foreground">
+                Manage all user accounts and their roles within the system.
+              </p>
+            </div>
           </div>
         </div>
+
+        {/* 2. Toolbar Row (Search, Role, Status, Exports, Create User) */}
+        <UserToolbar
+          filters={filters}
+          onFilterChange={handleFilterChange}
+          filteredUsers={filteredUsers}
+        />
+
+        {/* 3. Main Sticky Table */}
+        <UsersTable
+          users={paginatedUsers}
+          onDeleteUser={handleDeleteUser}
+          onViewUser={handleViewUser}
+        />
+
+        {/* 4. Pagination */}
+        <UsersPagination
+          currentPage={currentPage}
+          totalPages={totalPages}
+          totalUsers={filteredUsers.length}
+          pageSize={PAGE_SIZE}
+          onPageChange={(page) => setCurrentPage(page)}
+        />
+
+        {/* View User Details Modal */}
+        <UserDetailsModal
+          user={selectedUser}
+          isOpen={isDetailsOpen}
+          onClose={() => setIsDetailsOpen(false)}
+        />
       </div>
-
-      {/* 2. Toolbar Row (Search, Role, Status, Exports, Create User) */}
-      <UserToolbar
-        filters={filters}
-        onFilterChange={handleFilterChange}
-        filteredUsers={filteredUsers}
-      />
-
-      {/* 3. Main Sticky Table */}
-      <UsersTable
-        users={paginatedUsers}
-        onDeleteUser={handleDeleteUser}
-        onViewUser={handleViewUser}
-      />
-
-      {/* 4. Pagination (Showing 1–10 of 47 users, Page numbers, Prev/Next) */}
-      <UsersPagination
-        currentPage={currentPage}
-        totalPages={totalPages}
-        totalUsers={filteredUsers.length}
-        pageSize={PAGE_SIZE}
-        onPageChange={(page) => setCurrentPage(page)}
-      />
-
-      {/* View User Details Modal */}
-      <UserDetailsModal
-        user={selectedUser}
-        isOpen={isDetailsOpen}
-        onClose={() => setIsDetailsOpen(false)}
-      />
-    </div>
+    </RouteGuard>
   );
 }

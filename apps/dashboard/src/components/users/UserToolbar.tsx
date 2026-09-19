@@ -29,6 +29,7 @@ import {
 } from "../ui/dialog";
 import { User, UserFilters } from "../../types/user";
 import { exportToExcel, exportToPdf, exportToWord } from "../../lib/export-utils";
+import { usePermissions } from "../../context/permissions-context";
 
 interface UserToolbarProps {
   filters: UserFilters;
@@ -41,6 +42,7 @@ export function UserToolbar({
   onFilterChange,
   filteredUsers,
 }: UserToolbarProps) {
+  const { can } = usePermissions();
   const [exporting, setExporting] = useState<string | null>(null);
   const [pendingExport, setPendingExport] = useState<"excel" | "pdf" | "word" | null>(null);
 
@@ -176,12 +178,14 @@ export function UserToolbar({
           <span className="h-6 w-px bg-border mx-0.5 hidden sm:inline-block" />
 
           {/* Prominent "+ Create User" Button (Pure Teal Accent) */}
-          <Button asChild className="h-9 px-3.5 gap-1.5 bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-500 text-white font-medium text-xs shadow-sm">
-            <Link href="/users/create">
-              <Plus className="h-4 w-4" />
-              <span>Create User</span>
-            </Link>
-          </Button>
+          {can('users', 'create') && (
+            <Button asChild className="h-9 px-3.5 gap-1.5 bg-teal-700 hover:bg-teal-800 dark:bg-teal-600 dark:hover:bg-teal-500 text-white font-medium text-xs shadow-sm">
+              <Link href="/users/create">
+                <Plus className="h-4 w-4" />
+                <span>Create User</span>
+              </Link>
+            </Button>
+          )}
         </div>
       </div>
 

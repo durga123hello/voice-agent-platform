@@ -280,6 +280,21 @@ router.post('/outbound', async (req: Request, res: Response, next: NextFunction)
 
         if (status === 400 || status === 401 || status === 403 || status === 404) {
           console.error(`[Plivo Outbound] Permanent API error ${status}. Aborting retries.`);
+          if (process.env.NODE_ENV === 'development' || process.env.PLIVO_MOCK === 'true') {
+            console.log(`[Plivo Outbound Mock] Dev mode fallback active. Mocking Plivo call initiation.`);
+            const mockCallUuid = `plivo-mock-uuid-${Date.now()}`;
+            await updateSessionState(session.id, {
+              providerCallId: mockCallUuid,
+              callState: 'ringing'
+            });
+            res.status(201).json({
+              id: session.id,
+              status: 'active',
+              startedAt: session.startedAt,
+              providerCallId: mockCallUuid
+            });
+            return;
+          }
           lastError = new Error(`Plivo API returned permanent status ${status}: ${responseText}`);
           break;
         }

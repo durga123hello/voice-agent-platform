@@ -26,11 +26,11 @@ import {
 import { 
   Project, 
   ProjectStatus, 
-  resolveLlmModel, 
-  STT_PROVIDERS, 
-  TTS_PROVIDERS, 
-  LLM_PROVIDERS 
+  resolveLlmModel
 } from "../../types/project";
+import { Integration } from "../../types/integration";
+import { useAuth } from "../../context/auth-context";
+import { fetchIntegrationsByCategory } from "../../lib/api-integrations";
 
 const STORAGE_KEY = "vopx_projects_data_v1";
 
@@ -40,21 +40,64 @@ export function ProjectForm() {
   const editId = searchParams ? searchParams.get("edit") : null;
   const isEditMode = Boolean(editId);
 
+  const { token } = useAuth();
+
+  // Dynamic Integrations state
+  const [sttAgents, setSttAgents] = useState<Integration[]>([]);
+  const [ttsAgents, setTtsAgents] = useState<Integration[]>([]);
+  const [llmAgents, setLlmAgents] = useState<Integration[]>([]);
+  const [isLoadingAgents, setIsLoadingAgents] = useState(true);
+
   // Form State
   const [formData, setFormData] = useState({
     name: "",
     projectId: "",
     description: "",
     status: "Active" as ProjectStatus,
-    stt: "Deepgram Nova-2",
-    tts: "Cartesia Sonic (Fastest)",
-    llmModel: "GPT-4o",
+    stt: "",
+    tts: "",
+    llmModel: "",
     environment: "Production",
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Load tenant's agents from API
+  useEffect(() => {
+    async function loadAgents() {
+      if (!token) return;
+      setIsLoadingAgents(true);
+      try {
+        const [sttData, ttsData, llmData] = await Promise.all([
+          fetchIntegrationsByCategory("STT Agent", token),
+          fetchIntegrationsByCategory("TTS Agent", token),
+          fetchIntegrationsByCategory("LLM Provider", token),
+        ]);
+
+        setSttAgents(sttData);
+        setTtsAgents(ttsData);
+        setLlmAgents(llmData);
+
+        // Pre-set defaults if creating new and formData values are empty
+        if (!isEditMode) {
+          setFormData((prev) => ({
+            ...prev,
+            stt: prev.stt || (sttData.length > 0 ? sttData[0].name : ""),
+            tts: prev.tts || (ttsData.length > 0 ? ttsData[0].name : ""),
+            llmModel: prev.llmModel || (llmData.length > 0 ? llmData[0].name : ""),
+          }));
+        }
+      } catch (e) {
+        console.error("Failed to load integrations for ProjectForm", e);
+      } finally {
+        setIsLoadingAgents(false);
+      }
+    }
+
+    loadAgents();
+  }, [token, isEditMode]);
 
   // Pre-fill on Edit
   useEffect(() => {
@@ -209,10 +252,10 @@ export function ProjectForm() {
         </div>
       </div>
 
-      {/* Form Content */}
+      {/* Form Content — 2-Column Grid */}
       <div className="rounded-xl border border-border bg-card p-6 shadow-xs space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {/* 1. Project Name */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          {/* Row 1: Project Name */}
           <div className="space-y-1.5">
             <Label htmlFor="projectName" className="text-xs font-semibold text-foreground flex items-center gap-1">
               Project Name <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
@@ -227,7 +270,7 @@ export function ProjectForm() {
             {errors.name && <p className="text-[11px] text-rose-500">{errors.name}</p>}
           </div>
 
-          {/* 2. Project ID */}
+          {/* Row 1: Project ID */}
           <div className="space-y-1.5">
             <Label htmlFor="projectId" className="text-xs font-semibold text-foreground flex items-center gap-1">
               Project ID <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
@@ -242,7 +285,7 @@ export function ProjectForm() {
             {errors.projectId && <p className="text-[11px] text-rose-500">{errors.projectId}</p>}
           </div>
 
-          {/* 3. Status */}
+          {/* Row 2: Status */}
           <div className="space-y-1.5">
             <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
               Status <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
@@ -263,67 +306,7 @@ export function ProjectForm() {
             </Select>
           </div>
 
-          {/* 4. STT Engine */}
-          <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
-              Speech-to-Text (STT) <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
-            </Label>
-            <Select
-              value={formData.stt}
-              onValueChange={(val) => setFormData({ ...formData, stt: val })}
-            >
-              <SelectTrigger className="h-9 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {STT_PROVIDERS.map((stt) => (
-                  <SelectItem key={stt} value={stt}>{stt}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* 5. TTS Engine */}
-          <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
-              Text-to-Speech (TTS) <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
-            </Label>
-            <Select
-              value={formData.tts}
-              onValueChange={(val) => setFormData({ ...formData, tts: val })}
-            >
-              <SelectTrigger className="h-9 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {TTS_PROVIDERS.map((tts) => (
-                  <SelectItem key={tts} value={tts}>{tts}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* 6. LLM Model */}
-          <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
-              LLM Generation Model <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
-            </Label>
-            <Select
-              value={formData.llmModel}
-              onValueChange={(val) => setFormData({ ...formData, llmModel: val })}
-            >
-              <SelectTrigger className="h-9 text-xs font-mono">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {LLM_PROVIDERS.map((model) => (
-                  <SelectItem key={model} value={model} className="font-mono text-xs">{model}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* 7. Target Environment */}
+          {/* Row 2: Target Environment */}
           <div className="space-y-1.5">
             <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
               Environment
@@ -342,9 +325,111 @@ export function ProjectForm() {
               </SelectContent>
             </Select>
           </div>
+
+          {/* Row 3: STT Engine */}
+          <div className="space-y-1.5">
+            <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
+              Speech-to-Text (STT) <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
+            </Label>
+            <Select
+              value={formData.stt}
+              onValueChange={(val) => setFormData({ ...formData, stt: val })}
+              disabled={sttAgents.length === 0}
+            >
+              <SelectTrigger className="h-9 text-xs">
+                <SelectValue placeholder={sttAgents.length === 0 ? "No STT agents added yet" : "Select STT Agent"} />
+              </SelectTrigger>
+              <SelectContent>
+                {sttAgents.length > 0 ? (
+                  sttAgents.map((agent) => (
+                    <SelectItem key={agent.id} value={agent.name}>
+                      {agent.name} ({agent.provider})
+                    </SelectItem>
+                  ))
+                ) : (
+                  <SelectItem value="none" disabled>
+                    No STT agents added yet — add one from Integrations
+                  </SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+            {sttAgents.length === 0 && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                No STT agents added yet — add one from <Link href="/integrations/stt" className="underline hover:text-amber-700">Integrations</Link>.
+              </p>
+            )}
+          </div>
+
+          {/* Row 3: TTS Engine */}
+          <div className="space-y-1.5">
+            <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
+              Text-to-Speech (TTS) <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
+            </Label>
+            <Select
+              value={formData.tts}
+              onValueChange={(val) => setFormData({ ...formData, tts: val })}
+              disabled={ttsAgents.length === 0}
+            >
+              <SelectTrigger className="h-9 text-xs">
+                <SelectValue placeholder={ttsAgents.length === 0 ? "No TTS agents added yet" : "Select TTS Agent"} />
+              </SelectTrigger>
+              <SelectContent>
+                {ttsAgents.length > 0 ? (
+                  ttsAgents.map((agent) => (
+                    <SelectItem key={agent.id} value={agent.name}>
+                      {agent.name} ({agent.provider})
+                    </SelectItem>
+                  ))
+                ) : (
+                  <SelectItem value="none" disabled>
+                    No TTS agents added yet — add one from Integrations
+                  </SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+            {ttsAgents.length === 0 && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                No TTS agents added yet — add one from <Link href="/integrations/tts" className="underline hover:text-amber-700">Integrations</Link>.
+              </p>
+            )}
+          </div>
+
+          {/* Row 4: LLM Model */}
+          <div className="space-y-1.5">
+            <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
+              LLM Generation Model <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
+            </Label>
+            <Select
+              value={formData.llmModel}
+              onValueChange={(val) => setFormData({ ...formData, llmModel: val })}
+              disabled={llmAgents.length === 0}
+            >
+              <SelectTrigger className="h-9 text-xs font-mono">
+                <SelectValue placeholder={llmAgents.length === 0 ? "No LLM providers added yet" : "Select LLM Provider"} />
+              </SelectTrigger>
+              <SelectContent>
+                {llmAgents.length > 0 ? (
+                  llmAgents.map((agent) => (
+                    <SelectItem key={agent.id} value={agent.name} className="font-mono text-xs">
+                      {agent.name} ({agent.provider})
+                    </SelectItem>
+                  ))
+                ) : (
+                  <SelectItem value="none" disabled>
+                    No LLM providers added yet — add one from Integrations
+                  </SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+            {llmAgents.length === 0 && (
+              <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                No LLM providers added yet — add one from <Link href="/integrations/llm" className="underline hover:text-amber-700">Integrations</Link>.
+              </p>
+            )}
+          </div>
         </div>
 
-        {/* Description Textarea */}
+        {/* Full-Width Row: Description Textarea */}
         <div className="pt-2 border-t border-border/70 space-y-1.5">
           <Label htmlFor="description" className="text-xs font-semibold text-foreground flex items-center gap-1">
             Project Description & Use Case Scope <span className="text-teal-700 dark:text-teal-400 font-bold">*</span>
@@ -397,3 +482,4 @@ export function ProjectForm() {
     </form>
   );
 }
+

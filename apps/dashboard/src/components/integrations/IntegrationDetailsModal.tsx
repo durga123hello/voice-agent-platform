@@ -117,39 +117,6 @@ export function IntegrationDetailsModal({
             </p>
           </div>
 
-          {/* API Credentials */}
-          <div className="bg-muted/30 p-3 rounded-lg border border-border/60 space-y-1">
-            <span className="text-[10px] text-muted-foreground block font-medium">API Key Credentials</span>
-            <div className="flex items-center justify-between gap-2 bg-background p-2 rounded border border-border/70">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <Key className="h-3.5 w-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
-                <span className="font-mono text-xs text-foreground truncate">
-                  {isRevealed ? integration.apiKey : `••••••••••••${integration.apiKey.slice(-4)}`}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-1 shrink-0">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                  onClick={() => setIsRevealed(!isRevealed)}
-                >
-                  {isRevealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-                </Button>
-
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7 text-muted-foreground hover:text-teal-600"
-                  onClick={copyApiKey}
-                >
-                  {copied ? <Check className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
-                </Button>
-              </div>
-            </div>
-          </div>
-
           {/* Metadata */}
           <div className="grid grid-cols-2 gap-2.5 bg-muted/30 p-3 rounded-lg border border-border/60">
             {integration.latency && (

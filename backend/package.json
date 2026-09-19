@@ -26,7 +26,8 @@
     "jsonwebtoken": "^9.0.3",
     "mediasoup": "^3.21.2",
     "nodemailer": "^9.0.5",
-    "ws": "^8.21.1"
+    "ws": "^8.21.1",
+    "zod": "^4.6.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

@@ -30,11 +30,14 @@ const STORAGE_KEY = "vopx_users_data_v3";
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000";
 
 export function UserForm() {
-  const { token } = useAuth();
+  const { token, user: currentUser } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
   const editId = searchParams ? searchParams.get("edit") : null;
   const isEditMode = Boolean(editId);
+
+  // Manager Options list
+  const [managerOptions, setManagerOptions] = useState<User[]>([]);
 
   // Form State
   const [formData, setFormData] = useState({
@@ -52,6 +55,7 @@ export function UserForm() {
     role: "Administrator" as UserRole,
     status: "Active" as UserStatus,
     members: "Platform Core",
+    managerId: "",
   });
 
   // File Upload states
@@ -65,54 +69,144 @@ export function UserForm() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Load Manager options list
+  useEffect(() => {
+    async function loadManagerOptions() {
+      try {
+        if (token) {
+          const res = await fetch(`${API_BASE}/api/users`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const list: User[] = data.users || [];
+            setManagerOptions(list);
+
+            // Default managerId to currently logged-in user if creating new user
+            if (!editId && currentUser?.id) {
+              const matchingSelf = list.find(m => m.id === currentUser.id || m.email === currentUser.email);
+              if (matchingSelf) {
+                setFormData(prev => ({ ...prev, managerId: matchingSelf.id }));
+              } else if (list.length > 0) {
+                setFormData(prev => ({ ...prev, managerId: list[0].id }));
+              }
+            }
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn("Failed fetching users for manager select", e);
+      }
+      try {
+        const existing = localStorage.getItem(STORAGE_KEY);
+        if (existing) {
+          const list: User[] = JSON.parse(existing);
+          setManagerOptions(list);
+          if (!editId && currentUser?.id) {
+            const matchingSelf = list.find(m => m.id === currentUser.id);
+            if (matchingSelf) {
+              setFormData(prev => ({ ...prev, managerId: matchingSelf.id }));
+            }
+          }
+        }
+      } catch (e) {}
+    }
+    loadManagerOptions();
+  }, [token, editId, currentUser]);
+
   // Pre-fill employee information when in Edit mode
   useEffect(() => {
     if (!editId) return;
-    try {
-      const existing = localStorage.getItem(STORAGE_KEY);
-      if (existing) {
-        const userList: User[] = JSON.parse(existing);
-        const target = userList.find((u) => u.id === editId);
-        if (target) {
-          // Parse phone country code if present
-          let code = "+974";
-          let num = target.phone || "";
-          if (target.phone && target.phone.startsWith("+")) {
-            const parts = target.phone.split(" ");
-            code = parts[0];
-            num = parts.slice(1).join(" ");
-          }
 
-          const nameStr = target.name || "";
-          setFormData({
-            firstName: target.firstName || nameStr.split(" ")[0] || "",
-            lastName: target.lastName || nameStr.split(" ").slice(1).join(" ") || "",
-            employeeId: target.employeeId || "",
-            countryCode: code,
-            phone: num,
-            officialEmail: target.officialEmail || target.email || "",
-            personalEmail: target.personalEmail || "",
-            dateOfBirth: target.dateOfBirth || "",
-            dateOfJoining: target.joinedDate || target.dateOfJoining || new Date().toISOString().split("T")[0],
-            nationality: target.nationality || "Qatar",
-            gender: target.gender || "Male",
-            role: target.role || "Administrator",
-            status: target.status || "Active",
-            members: target.members || "Platform Core",
+    async function loadEditUser() {
+      if (token) {
+        try {
+          const res = await fetch(`${API_BASE}/api/users`, {
+            headers: { Authorization: `Bearer ${token}` }
           });
-
-          if (target.avatarUrl) {
-            setProfilePhotoPreview(target.avatarUrl);
+          if (res.ok) {
+            const data = await res.json();
+            const target = (data.users || []).find((u: User) => u.id === editId);
+            if (target) {
+              let code = "+974";
+              let num = target.phone || target.phoneNumber || "";
+              if (num && num.startsWith("+")) {
+                const parts = num.split(" ");
+                code = parts[0];
+                num = parts.slice(1).join(" ");
+              }
+              const nameStr = target.name || "";
+              setFormData({
+                firstName: target.firstName || nameStr.split(" ")[0] || "",
+                lastName: target.lastName || nameStr.split(" ").slice(1).join(" ") || "",
+                employeeId: target.employeeId || "",
+                countryCode: code,
+                phone: num,
+                officialEmail: target.officialEmail || target.email || "",
+                personalEmail: target.personalEmail || "",
+                dateOfBirth: target.dateOfBirth || "",
+                dateOfJoining: target.joinedDate || target.dateOfJoining || new Date().toISOString().split("T")[0],
+                nationality: target.nationality || "Qatar",
+                gender: target.gender || "Male",
+                role: target.role || "Administrator",
+                status: target.status || "Active",
+                members: target.members || "Platform Core",
+                managerId: target.managerId || target.manager_id || target.manager?.id || "",
+              });
+              if (target.avatarUrl) setProfilePhotoPreview(target.avatarUrl);
+              if (target.signatureUrl) setSignaturePreview(target.signatureUrl);
+              return;
+            }
           }
-          if (target.signatureUrl) {
-            setSignaturePreview(target.signatureUrl);
-          }
+        } catch (e) {
+          console.warn("Failed fetching edit user from API", e);
         }
       }
-    } catch (e) {
-      console.error("Failed loading user for edit", e);
+
+      try {
+        const existing = localStorage.getItem(STORAGE_KEY);
+        if (existing) {
+          const userList: User[] = JSON.parse(existing);
+          const target = userList.find((u) => u.id === editId);
+          if (target) {
+            let code = "+974";
+            let num = target.phone || "";
+            if (target.phone && target.phone.startsWith("+")) {
+              const parts = target.phone.split(" ");
+              code = parts[0];
+              num = parts.slice(1).join(" ");
+            }
+
+            const nameStr = target.name || "";
+            setFormData({
+              firstName: target.firstName || nameStr.split(" ")[0] || "",
+              lastName: target.lastName || nameStr.split(" ").slice(1).join(" ") || "",
+              employeeId: target.employeeId || "",
+              countryCode: code,
+              phone: num,
+              officialEmail: target.officialEmail || target.email || "",
+              personalEmail: target.personalEmail || "",
+              dateOfBirth: target.dateOfBirth || "",
+              dateOfJoining: target.joinedDate || target.dateOfJoining || new Date().toISOString().split("T")[0],
+              nationality: target.nationality || "Qatar",
+              gender: target.gender || "Male",
+              role: target.role || "Administrator",
+              status: target.status || "Active",
+              members: target.members || "Platform Core",
+              managerId: target.managerId || target.manager_id || target.manager?.id || "",
+            });
+
+            if (target.avatarUrl) setProfilePhotoPreview(target.avatarUrl);
+            if (target.signatureUrl) setSignaturePreview(target.signatureUrl);
+          }
+        }
+      } catch (e) {
+        console.error("Failed loading user for edit", e);
+      }
     }
-  }, [editId]);
+
+    loadEditUser();
+  }, [editId, token]);
 
   // Validation
   const validate = () => {
@@ -202,50 +296,99 @@ export function UserForm() {
         });
 
     if (isEditMode && editId) {
-      // EDIT MODE: Update existing user in localStorage
-      try {
-        const existing = localStorage.getItem(STORAGE_KEY);
-        const userList: User[] = existing ? JSON.parse(existing) : [];
-        const updatedList = userList.map((u) => {
-          if (u.id === editId) {
-            return {
-              ...u,
-              firstName: formData.firstName.trim(),
-              lastName: formData.lastName.trim(),
-              name: `${formData.firstName.trim()} ${formData.lastName.trim()}`,
-              email: formData.officialEmail.trim(),
-              personalEmail: formData.personalEmail.trim() || undefined,
-              employeeId: formData.employeeId.trim(),
-              role: formData.role,
-              status: formData.status,
-              members: formData.members,
-              joinedDate: formattedDate,
-              phone: formData.phone ? `${formData.countryCode} ${formData.phone.trim()}` : undefined,
-              dateOfBirth: formData.dateOfBirth || undefined,
-              nationality: formData.nationality,
-              gender: formData.gender,
-              avatarUrl: profilePhotoPreview || u.avatarUrl,
-              signatureUrl: signaturePreview || u.signatureUrl,
-            };
-          }
-          return u;
-        });
+      // EDIT MODE: Update existing user
+      const updateOrgUser = async () => {
+        const payload = {
+          firstName: formData.firstName.trim(),
+          lastName: formData.lastName.trim(),
+          employeeId: formData.employeeId.trim(),
+          officialEmail: formData.officialEmail.trim(),
+          personalEmail: formData.personalEmail.trim() || undefined,
+          phoneNumber: formData.phone ? `${formData.countryCode} ${formData.phone.trim()}` : undefined,
+          dateOfBirth: formData.dateOfBirth || undefined,
+          dateOfJoining: formData.dateOfJoining || undefined,
+          nationality: formData.nationality,
+          gender: formData.gender,
+          role: formData.role,
+          status: formData.status,
+          managerId: formData.managerId || null,
+        };
 
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
-      } catch (err) {
-        console.error("Failed updating user", err);
+        if (token) {
+          try {
+            const res = await fetch(`${API_BASE}/api/users/${editId}`, {
+              method: "PUT",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify(payload),
+            });
+
+            if (res.ok) {
+              setToastMessage(`User ${formData.firstName} ${formData.lastName} updated successfully!`);
+              setTimeout(() => {
+                router.push("/users");
+              }, 900);
+              return;
+            } else {
+              const errData = await res.json().catch(() => ({}));
+              const rawErr = errData.error || errData.message;
+              setErrors((prev) => ({ ...prev, officialEmail: typeof rawErr === "string" ? rawErr : "Failed to update user" }));
+              setIsSubmitting(false);
+              return;
+            }
+          } catch (err) {
+            console.warn("API update failed, updating locally", err);
+          }
+        }
+
+        try {
+          const existing = localStorage.getItem(STORAGE_KEY);
+          const userList: User[] = existing ? JSON.parse(existing) : [];
+          const updatedList = userList.map((u) => {
+            if (u.id === editId) {
+              return {
+                ...u,
+                firstName: formData.firstName.trim(),
+                lastName: formData.lastName.trim(),
+                name: `${formData.firstName.trim()} ${formData.lastName.trim()}`,
+                email: formData.officialEmail.trim(),
+                personalEmail: formData.personalEmail.trim() || undefined,
+                employeeId: formData.employeeId.trim(),
+                role: formData.role,
+                status: formData.status,
+                members: formData.members,
+                joinedDate: formattedDate,
+                phone: formData.phone ? `${formData.countryCode} ${formData.phone.trim()}` : undefined,
+                dateOfBirth: formData.dateOfBirth || undefined,
+                nationality: formData.nationality,
+                gender: formData.gender,
+                managerId: formData.managerId || undefined,
+                avatarUrl: profilePhotoPreview || u.avatarUrl,
+                signatureUrl: signaturePreview || u.signatureUrl,
+              };
+            }
+            return u;
+          });
+
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
+        } catch (err) {
+          console.error("Failed updating user", err);
+        }
+
+        setToastMessage(`User ${formData.firstName} ${formData.lastName} updated successfully! Redirecting...`);
+        setTimeout(() => {
+          router.push("/users");
+        }, 900);
       }
 
-      setToastMessage(`User ${formData.firstName} ${formData.lastName} updated successfully! Redirecting...`);
-
-      setTimeout(() => {
-        router.push("/users");
-      }, 900);
+      updateOrgUser();
       return;
     }
 
     // CREATE MODE: Post new user to backend API (server assigns tenantId from session token)
-    async function createOrgUser() {
+    const createOrgUser = async () => {
       const payload = {
         firstName: formData.firstName.trim(),
         lastName: formData.lastName.trim(),
@@ -259,6 +402,7 @@ export function UserForm() {
         gender: formData.gender,
         role: formData.role,
         status: formData.status,
+        managerId: formData.managerId || null,
         profilePhotoUrl: profilePhotoPreview || undefined,
         signatureUrl: signaturePreview || undefined,
       };
@@ -282,12 +426,16 @@ export function UserForm() {
             }, 900);
             return;
           } else {
-            const errData = await res.json();
-            setErrors((prev) => ({ ...prev, officialEmail: errData.error || "Failed to create user" }));
+            const errData = await res.json().catch(() => ({}));
+            const rawErr = errData.error || errData.message;
+            const errorString = typeof rawErr === "string" 
+              ? rawErr 
+              : (rawErr?.message || "Failed to create user");
+            setErrors((prev) => ({ ...prev, officialEmail: errorString }));
             setIsSubmitting(false);
             return;
           }
-        } catch (err) {
+        } catch (err: any) {
           console.warn("API request failed, falling back to local creation:", err);
         }
       }
@@ -376,12 +524,9 @@ export function UserForm() {
         </div>
       </div>
 
-      {/* 
-        CRITICAL LAYOUT REQUIREMENT:
-        Responsive 3-column grid (collapsing to 1 column on mobile)!
-      */}
+      {/* 2-Column Grid Form Layout */}
       <div className="rounded-xl border border-border bg-card p-6 shadow-xs space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
 
           {/* 1. First Name* */}
           <div className="space-y-1.5">
@@ -595,6 +740,31 @@ export function UserForm() {
             </Select>
           </div>
 
+          {/* Manager selection */}
+          <div className="space-y-1.5">
+            <Label htmlFor="managerId" className="text-xs font-semibold text-foreground">
+              Manager
+            </Label>
+            <Select
+              value={formData.managerId || "none"}
+              onValueChange={(val) => setFormData({ ...formData, managerId: val === "none" ? "" : val })}
+            >
+              <SelectTrigger className="h-9 text-xs">
+                <SelectValue placeholder="Select manager" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">No Manager Assigned</SelectItem>
+                {managerOptions
+                  .filter((m) => !editId || m.id !== editId)
+                  .map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.name || `${m.firstName || ''} ${m.lastName || ''}`.trim() || m.officialEmail || m.email} ({m.role || 'User'})
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           {/* 10. Gender* (Radio group: Male / Female / Other) */}
           <div className="space-y-2">
             <Label className="text-xs font-semibold text-foreground flex items-center gap-1">
@@ -618,87 +788,6 @@ export function UserForm() {
                 <Label htmlFor="gender-other" className="text-xs font-normal cursor-pointer">Other</Label>
               </div>
             </RadioGroup>
-          </div>
-
-        </div>
-
-        {/* Uploads Section: Profile Photo & Signature (2 Columns) */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-4 border-t border-border/70">
-          
-          {/* 11. Profile Photo */}
-          <div className="space-y-2">
-            <Label className="text-xs font-semibold text-foreground">
-              Profile Photo
-            </Label>
-            <div className="relative border-2 border-dashed border-border hover:border-teal-700/60 dark:hover:border-teal-400/60 rounded-xl p-4 text-center transition-colors bg-muted/20">
-              <input
-                type="file"
-                accept="image/*"
-                onChange={handlePhotoUpload}
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                id="photo-upload"
-              />
-              {profilePhotoPreview ? (
-                <div className="flex items-center justify-center gap-3">
-                  <img
-                    src={profilePhotoPreview}
-                    alt="Preview"
-                    className="h-16 w-16 object-cover rounded-full border border-border"
-                  />
-                  <div className="text-left">
-                    <p className="text-xs font-semibold text-foreground truncate max-w-[160px]">
-                      {profilePhoto?.name || "Uploaded Photo"}
-                    </p>
-                    <span className="text-[11px] text-teal-700 dark:text-teal-400 font-medium">Click to change</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center space-y-1 pointer-events-none">
-                  <UploadCloud className="h-8 w-8 text-muted-foreground/60" />
-                  <p className="text-xs font-medium text-foreground">Click to upload or drag and drop</p>
-                  <p className="text-[11px] text-muted-foreground">PNG, JPG, or WEBP (Max 2MB)</p>
-                </div>
-              )}
-            </div>
-            {errors.profilePhoto && <p className="text-[11px] text-rose-500">{errors.profilePhoto}</p>}
-          </div>
-
-          {/* 12. Signature */}
-          <div className="space-y-2">
-            <Label className="text-xs font-semibold text-foreground">
-              Digital Signature
-            </Label>
-            <div className="relative border-2 border-dashed border-border hover:border-teal-700/60 dark:hover:border-teal-400/60 rounded-xl p-4 text-center transition-colors bg-muted/20">
-              <input
-                type="file"
-                accept="image/*"
-                onChange={handleSignatureUpload}
-                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                id="signature-upload"
-              />
-              {signaturePreview ? (
-                <div className="flex items-center justify-center gap-3">
-                  <img
-                    src={signaturePreview}
-                    alt="Signature Preview"
-                    className="h-16 max-w-[160px] object-contain border border-border bg-white rounded p-1"
-                  />
-                  <div className="text-left">
-                    <p className="text-xs font-semibold text-foreground truncate max-w-[160px]">
-                      {signature?.name || "Digital Signature"}
-                    </p>
-                    <span className="text-[11px] text-teal-700 dark:text-teal-400 font-medium">Click to change</span>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center space-y-1 pointer-events-none">
-                  <UploadCloud className="h-8 w-8 text-muted-foreground/60" />
-                  <p className="text-xs font-medium text-foreground">Click to upload signature</p>
-                  <p className="text-[11px] text-muted-foreground">PNG with transparent background (Max 2MB)</p>
-                </div>
-              )}
-            </div>
-            {errors.signature && <p className="text-[11px] text-rose-500">{errors.signature}</p>}
           </div>
 
         </div>

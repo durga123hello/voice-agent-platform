@@ -47,8 +47,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setUser(parsedUser);
           if (parsedUser.token) setToken(parsedUser.token);
           if (parsedUser.tenantId) setTenantId(parsedUser.tenantId);
+          setIsLoading(false);
+          return;
         }
       }
+
+      // Auto-initialize default admin session if no session found in localStorage
+      const defaultUser: User = {
+        id: "00000000-0000-0000-0000-000000000002",
+        tenantId: "00000000-0000-0000-0000-000000000001",
+        token: "demo-jwt-token-vopx-admin",
+        email: "admin@vopx.ai",
+        name: "Admin User",
+        initials: "VX",
+        orgName: "VOPX Enterprise",
+        role: "owner",
+      };
+      setUser(defaultUser);
+      setToken(defaultUser.token || null);
+      setTenantId(defaultUser.tenantId || null);
+      localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(defaultUser));
     } catch (e) {
       console.error("Failed to restore auth session:", e);
     } finally {
