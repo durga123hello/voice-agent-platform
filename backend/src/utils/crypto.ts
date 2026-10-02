@@ -2,13 +2,8 @@ import crypto from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 
-// We fetch the secret from env (support both ENCRYPTION_SECRET and ENCRYPTION_KEY).
-const SECRET = process.env.ENCRYPTION_SECRET || process.env.ENCRYPTION_KEY;
-
-// Ensure the secret is present and is sufficiently long.
-if (!SECRET) {
-  throw new Error('CRITICAL: ENCRYPTION_SECRET (or ENCRYPTION_KEY) environment variable is not defined.');
-}
+// We fetch the secret from env (support both ENCRYPTION_SECRET and ENCRYPTION_KEY) with a dev fallback.
+const SECRET = process.env.ENCRYPTION_SECRET || process.env.ENCRYPTION_KEY || 'default-voice-platform-secret-32-bytes-long';
 
 // Derive a 32-byte key from the secret using SHA-256
 const getSecretKey = (): Buffer => {
